@@ -35,49 +35,8 @@ from langchain.prompts import PromptTemplate
 
 import math
 
-
-
-
-def chat_loop(llm, embed_model, vector_store, innovation_features):
-
-    chatbot_prompt = PromptTemplate.from_template("""
-
-        You're a smart assistant helping extract insights from VTT innovation relationships.
-
-        Context:
-        {context}
-
-        According to the context, answer this question:
-        {question}
-    """)
-
-    chat_bot = chatbot_prompt | llm
-
-    while True:
-
-        query = input("\nAsk about innovation: ")
-
-        # For testing.
-        # query = "nuclear decommissioning"
-
-        if query.lower() == "exit":
-            break
-
-        query_embedding = get_embedding(query, embed_model)
-
-        results = vector_store.vector_search(query, k=3)
-
-        context = "\n".join([innovation_features[doc.page_content] for doc in results])
-
-        # print(context)
-
-        llm_result = chat_bot.invoke({"context":context, "question":query})
-        answer = llm_result.content
-
-        print("\n --- --- --- [Answer] --- --- ---")
-        print(answer)
-
-
+# Global variable for descriptions retrieve.
+innovation_features = {}
 
 # Import local modules
 from innovation_utils import (
@@ -687,7 +646,9 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, ve
 
     # Step 2: Construct a detailed textual context for each innovation
     # This includes: name, description, developers, and relationship-based context
-    innovation_features = {}
+    global innovation_features
+    innovation_features.clear()
+
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row['source_id']
         if innovation_id not in innovation_features:
@@ -817,7 +778,7 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, ve
         print("Uploaded embeddings to Azure AI Search...")
 
 
-    return canonical_mapping, innovation_features
+    return canonical_mapping
 
 
 def create_innovation_knowledge_graph(df_relationships: pd.DataFrame, canonical_mapping: Dict[str, str]) -> Dict:
@@ -1341,6 +1302,42 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
     print(f"Results exported to {output_dir}")
 
 
+def chat_bot(query:str) -> str:
+    global innovation_features
+
+    llm, _ , vector_store = initialize_openai_client()
+
+    
+    if llm is None:
+        print("Warning: Language model not available. Some features may be limited.")
+    
+    if vector_store is None:
+        print("Warning: AI search unavailable.")
+    
+
+    # Set up Chatbot
+    chatbot_prompt = PromptTemplate.from_template("""
+
+        You're a smart assistant helping extract insights from VTT innovation relationships.
+
+        Context:
+        {context}
+
+        According to the context, answer this question:
+        {question}
+    """)
+
+    chatbot_llm = chatbot_prompt | llm
+
+    results = vector_store.vector_search(query, k=3)
+
+    context = "\n".join([innovation_features[doc.page_content] for doc in results])
+
+    llm_result = chatbot_llm.invoke({"context":context, "question":query})
+    answer = llm_result.content
+    
+    return answer
+
 def main():
     """Main function to execute the innovation resolution workflow."""
     import argparse
@@ -1374,22 +1371,28 @@ def main():
     
     # Step 2: Initialize OpenAI client
     llm, embed_model, vector_store = initialize_openai_client()
+
     
     if llm is None:
         print("Warning: Language model not available. Some features may be limited.")
     
     if embed_model is None:
         print("Warning: Embedding model not available. Using TF-IDF embeddings as fallback.")
-    
+
+    if vector_store is None:
+        print("Warning: AI search unavailable.")
+
     # Step 3: Resolve innovation duplicates
-    canonical_mapping, innovation_features = resolve_innovation_duplicates(
+    canonical_mapping = resolve_innovation_duplicates(
         df_relationships, 
         embed_model,
         vector_store,
         cache_config=cache_config
     )
 
-    chat_loop(llm, embed_model, vector_store, innovation_features)
+    # Test chat_bot.
+    answer = chat_bot("nuclear")
+    print(answer)
     
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
