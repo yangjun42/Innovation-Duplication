@@ -1449,6 +1449,7 @@ def main():
         
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
+    print(consolidated_graph['organizations'].get("FI01120389"))
     
     # Step 5: Analyze innovation network
     analysis_results = analyze_innovation_network(consolidated_graph)
