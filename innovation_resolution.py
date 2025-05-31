@@ -27,6 +27,21 @@ from vis import visualize_network_tufte
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 
+from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureOpenAIEmbeddings
+
+from langchain_community.vectorstores.azuresearch import AzureSearch
+
+from langchain_core.documents import Document
+
+from langchain.prompts import PromptTemplate
+
+
+import math
+
+# Global variable for descriptions retrieve.
+innovation_features = {}
+
 # Import local modules
 from innovation_utils import (
     compute_similarity_matrix,
@@ -196,7 +211,6 @@ class MemoryCache:
     
     def contains(self, key: str) -> bool:
         return key in self.cache_data
-
 
 class EmbeddingCache:
     """
@@ -705,8 +719,17 @@ def initialize_openai_client():
             api_version=config[model_name]['api_version'],
             dimensions=dim
         )
+
+        vector_store_name = 'azure-ai-search'
+
+        vector_store = AzureSearch(
+            azure_search_endpoint = config[vector_store_name]['azure_endpoint'],
+            azure_search_key = config[vector_store_name]['api_key'],
+            index_name = config[vector_store_name]['index_name'],
+            embedding_function= embedding_model
+        )
         
-        return llm, embedding_model
+        return llm, embedding_model, vector_store
     else:
         print(f"Model {model_name} configuration not found")
         return None, None
@@ -786,18 +809,19 @@ def compute_similarity(emb1, emb2) -> float:
 
 
 def resolve_innovation_duplicates(
-    df_relationships: pd.DataFrame,
-    model=None,
+    df_relationships: pd.DataFrame, 
+    model=None, 
+    vector_store = None,
     cache_config: Dict = None,
     method: str = "hdbscan",
-    **method_kwargs
-) -> Dict[str, str]:
+    **method_kwargs) -> Dict[str, str]:
     """
     Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
     
     Args:
         df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes.
         model (callable, optional): Embedding model function that converts text -> vector.
+        vector_store (callable, optional): Azure AI search function, containing text emb. feat.
         cache_config (Dict, optional): 缓存配置，包含以下字段:
             - type: 缓存类型 ('embedding')
             - backend: 后端类型 ('json' or 'memory')
@@ -824,15 +848,18 @@ def resolve_innovation_duplicates(
         Dict[str, str]: Mapping from each innovation ID -> its canonical cluster ID.
     """
     print("Resolving innovation duplicates...")
-    # -------- 默认缓存配置 --------
+    
     default_cache_config = {
         "type": "embedding",
-        "backend": "json",
+        "backend": "json", 
         "path": "./embedding_vectors.json",
         "use_cache": True
     }
+    
+    # 合并配置
     if cache_config is None:
         cache_config = {}
+    
     config = {**default_cache_config, **cache_config}
 
     # Step 1: 从 DataFrame 中筛选出所有 source_type == "Innovation"，并去重
@@ -842,8 +869,12 @@ def resolve_innovation_duplicates(
     if unique_innovations.empty:
         return {}
 
+    # Step 2: Construct a detailed textual context for each innovation
+    # This includes: name, description, developers, and relationship-based context
     # Step 2: 为每个 Innovation 构建一个文本上下文（包含名称、描述、开发组织、其他关系说明）
-    innovation_features: Dict[str, str] = {}
+    global innovation_features
+    innovation_features.clear()
+
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row["source_id"]
         if innovation_id in innovation_features:
@@ -1003,7 +1034,45 @@ def resolve_innovation_duplicates(
 
     print(f"Found {len(set(canonical_mapping.values()))} unique innovation clusters "
           f"(reduced from {len(unique_innovations)}).")
+          
+    # Step 5: (deleted)
+    
+    # Step 6: Upload canonical embeddings to Azure AI Search
+    if vector_store is not None:
+        print("Uploading embeddings to Azure AI Search...")
+
+        text_embeddings = [(id, embeddings[id]) for id in clusters.keys() if id in embeddings]
+
+        # 1000 时有 error_map 的bug
+        batch_size = 500
+        total_batches = math.ceil(len(text_embeddings) / batch_size)
+
+        for i in range(total_batches):
+            start_index = i * batch_size
+            end_index = start_index + batch_size
+
+            batch_text_embeddings = text_embeddings[start_index:end_index]
+
+            try:
+                vector_store.add_embeddings(
+                    text_embeddings=batch_text_embeddings
+                )
+                print(f"Successfully uploaded batch {i + 1}/{total_batches}")
+            # Batch 失败就一个一个试
+            except Exception as e:
+                try:
+                    print(f"Error batch")
+                    for embd in batch_text_embeddings:
+                        vector_store.add_embeddings(
+                            text_embeddings=[embd]
+                        )
+                except Exception as e:
+                    print(f"Error uploading embedding: {e}")
+
+        print("Uploaded embeddings to Azure AI Search...")
+        
     return canonical_mapping
+
 
 
 def create_innovation_knowledge_graph(df_relationships: pd.DataFrame, canonical_mapping: Dict[str, str]) -> Dict:
@@ -1269,6 +1338,42 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
     print(f"Results exported to {output_dir}")
 
 
+def chat_bot(query:str) -> str:
+    global innovation_features
+
+    llm, _ , vector_store = initialize_openai_client()
+
+    
+    if llm is None:
+        print("Warning: Language model not available. Some features may be limited.")
+    
+    if vector_store is None:
+        print("Warning: AI search unavailable.")
+    
+
+    # Set up Chatbot
+    chatbot_prompt = PromptTemplate.from_template("""
+
+        You're a smart assistant helping extract insights from VTT innovation relationships.
+
+        Context:
+        {context}
+
+        According to the context, answer this question:
+        {question}
+    """)
+
+    chatbot_llm = chatbot_prompt | llm
+
+    results = vector_store.vector_search(query, k=3)
+
+    context = "\n".join([innovation_features[doc.page_content] for doc in results])
+
+    llm_result = chatbot_llm.invoke({"context":context, "question":query})
+    answer = llm_result.content
+    
+    return answer
+
 def main():
     """Main function to execute the innovation resolution workflow."""
     import argparse
@@ -1283,6 +1388,7 @@ def main():
                        help="Path to cache file (for file-based backends)")
     parser.add_argument("--no-cache", action="store_true", 
                        help="Disable caching")
+
     parser.add_argument("--skip-eval", action="store_true",
                        help="Skip evaluation step")
     parser.add_argument("--auto-label", action="store_true",
@@ -1305,13 +1411,30 @@ def main():
     df_relationships, all_pred_entities, all_pred_relations = load_and_combine_data()
     
     # Step 2: Initialize OpenAI client
-    llm, embed_model = initialize_openai_client()
+
+    llm, embed_model, vector_store = initialize_openai_client()
+
     
     if llm is None:
         print("Warning: Language model not available. Some features may be limited.")
     
     if embed_model is None:
         print("Warning: Embedding model not available. Using TF-IDF embeddings as fallback.")
+
+    if vector_store is None:
+        print("Warning: AI search unavailable.")
+
+    # Step 3: Resolve innovation duplicates
+    canonical_mapping = resolve_innovation_duplicates(
+        df_relationships, 
+        embed_model,
+        vector_store,
+        cache_config=cache_config
+    )
+
+    # Test chat_bot.
+    answer = chat_bot("nuclear")
+    print(answer)
     
     # Step 3: Resolve innovation duplicates
     canonical_mapping = resolve_innovation_duplicates(
@@ -1331,6 +1454,7 @@ def main():
     analysis_results = analyze_innovation_network(consolidated_graph)
     
     # Step 6: Visualize network
+
     visualize_network_tufte(analysis_results)
     
     # Save predicted entities and relationships for evaluation
