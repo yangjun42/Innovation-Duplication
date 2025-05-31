@@ -155,6 +155,35 @@ python innovation_resolution.py --skip-eval
 python innovation_resolution.py --auto-label
 ```
 
+### Command Line Options
+
+The script now supports various command line options for configuring the caching system:
+
+```
+python innovation_resolution.py [options]
+
+Options:
+  --cache-type TYPE      Cache type to use (default: embedding)
+  --cache-backend TYPE   Cache backend type (json or memory, default: json)
+  --cache-path PATH      Path to cache file (default: ./embedding_vectors.json)
+  --no-cache             Disable caching
+```
+
+Examples:
+```bash
+# Use default configuration (JSON file caching)
+python innovation_resolution.py
+
+# Use in-memory caching (faster but not persistent)
+python innovation_resolution.py --cache-backend memory
+
+# Disable caching (regenerate embeddings each time)
+python innovation_resolution.py --no-cache
+
+# Custom cache file location
+python innovation_resolution.py --cache-path "./data/cache/embeddings.json"
+```
+
 ## Solution Details
 
 ### Innovation Resolution
