@@ -26,6 +26,59 @@ from tqdm import tqdm
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 
+from langchain_community.vectorstores.azuresearch import AzureSearch
+
+from langchain_core.documents import Document
+
+from langchain.prompts import PromptTemplate
+
+
+import math
+
+
+
+
+def chat_loop(llm, embed_model, vector_store, innovation_features):
+
+    chatbot_prompt = PromptTemplate.from_template("""
+
+        You're a smart assistant helping extract insights from VTT innovation relationships.
+
+        Context:
+        {context}
+
+        According to the context, answer this question:
+        {question}
+    """)
+
+    chat_bot = chatbot_prompt | llm
+
+    while True:
+
+        query = input("\nAsk about innovation: ")
+
+        # For testing.
+        # query = "nuclear decommissioning"
+
+        if query.lower() == "exit":
+            break
+
+        query_embedding = get_embedding(query, embed_model)
+
+        results = vector_store.vector_search(query, k=3)
+
+        context = "\n".join([innovation_features[doc.page_content] for doc in results])
+
+        # print(context)
+
+        llm_result = chat_bot.invoke({"context":context, "question":query})
+        answer = llm_result.content
+
+        print("\n --- --- --- [Answer] --- --- ---")
+        print(answer)
+
+
+
 # Import local modules
 from innovation_utils import (
     compute_similarity_matrix,
@@ -505,8 +558,17 @@ def initialize_openai_client():
             api_version=config[model_name]['api_version'],
             dimensions=dim
         )
+
+        vector_store_name = 'azure-ai-search'
+
+        vector_store = AzureSearch(
+            azure_search_endpoint = config[vector_store_name]['azure_endpoint'],
+            azure_search_key = config[vector_store_name]['api_key'],
+            index_name = config[vector_store_name]['index_name'],
+            embedding_function= embedding_model
+        )
         
-        return llm, embedding_model
+        return llm, embedding_model, vector_store
     else:
         print(f"Model {model_name} configuration not found")
         return None, None
@@ -585,7 +647,7 @@ def compute_similarity(emb1, emb2) -> float:
     return cosine_similarity(emb1, emb2)[0][0]
 
 
-def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, 
+def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, vector_store = None,
                               cache_config: Dict = None) -> Dict[str, str]:
     """
     Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
@@ -720,7 +782,42 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
     print(f"Found {len(clusters)} unique innovation clusters")
     print(f"Reduced from {len(innovation_features)} to {len(clusters)} innovations")
 
-    return canonical_mapping
+    # Step 6: Upload canonical embeddings to Azure AI Search
+    if vector_store is not None:
+        print("Uploading embeddings to Azure AI Search...")
+
+        text_embeddings = [(id, embeddings[id]) for id in clusters.keys() if id in embeddings]
+
+        # 1000 时有 error_map 的bug
+        batch_size = 500
+        total_batches = math.ceil(len(text_embeddings) / batch_size)
+
+        for i in range(total_batches):
+            start_index = i * batch_size
+            end_index = start_index + batch_size
+
+            batch_text_embeddings = text_embeddings[start_index:end_index]
+
+            try:
+                vector_store.add_embeddings(
+                    text_embeddings=batch_text_embeddings
+                )
+                print(f"Successfully uploaded batch {i + 1}/{total_batches}")
+            # Batch 失败就一个一个试
+            except Exception as e:
+                try:
+                    print(f"Error batch")
+                    for embd in batch_text_embeddings:
+                        vector_store.add_embeddings(
+                            text_embeddings=[embd]
+                        )
+                except Exception as e:
+                    print(f"Error uploading embedding: {e}")
+
+        print("Uploaded embeddings to Azure AI Search...")
+
+
+    return canonical_mapping, innovation_features
 
 
 def create_innovation_knowledge_graph(df_relationships: pd.DataFrame, canonical_mapping: Dict[str, str]) -> Dict:
@@ -1276,7 +1373,7 @@ def main():
     df_relationships = load_and_combine_data()
     
     # Step 2: Initialize OpenAI client
-    llm, embed_model = initialize_openai_client()
+    llm, embed_model, vector_store = initialize_openai_client()
     
     if llm is None:
         print("Warning: Language model not available. Some features may be limited.")
@@ -1285,11 +1382,14 @@ def main():
         print("Warning: Embedding model not available. Using TF-IDF embeddings as fallback.")
     
     # Step 3: Resolve innovation duplicates
-    canonical_mapping = resolve_innovation_duplicates(
+    canonical_mapping, innovation_features = resolve_innovation_duplicates(
         df_relationships, 
         embed_model,
+        vector_store,
         cache_config=cache_config
     )
+
+    chat_loop(llm, embed_model, vector_store, innovation_features)
     
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
