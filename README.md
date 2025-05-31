@@ -32,12 +32,21 @@ Innovation-Duplication/
 │   ├── graph_docs_vtt_domain/  # VTT domain source data
 │   ├── graph_docs_vtt_domain_names_resolved/  # VTT domain data with resolved names
 │   └── keys/                   # API keys for OpenAI (needs to be obtained)
+├── evaluation/                 # Evaluation files directory
+│   ├── gold_entities.json      # Gold standard entities for evaluation (optional)
+│   ├── gold_relations.json     # Gold standard relations for evaluation (optional)
+│   ├── pred_entities.json      # Predicted entities
+│   ├── pred_relations.json     # Predicted relations
+│   ├── consistency_sample.csv  # Samples for manual consistency checking
+│   ├── qa_examples.json        # Example QA queries and results
+│   └── evaluation_results.json # Comprehensive evaluation metrics
 ├── results/                    # Output directory for analysis results
 ├── introduction_data.ipynb     # Notebook introducing the dataset
 ├── introduction_data.py        # Python script version of the introduction
 ├── local_entity_processing.py  # Data models for graph documents
 ├── innovation_resolution.py    # Main script for innovation resolution
 ├── innovation_utils.py         # Utility functions for innovation resolution
+├── evaluation.py               # Evaluation module for quality assessment
 ├── requirements.txt            # Project dependencies (pip)
 ├── environment.yml             # Conda environment specification
 └── README.md                   # This file
@@ -107,6 +116,44 @@ The script will perform the following steps:
 5. Analyze the innovation network
 6. Visualize the results
 7. Export the results to the `results/` directory
+8. Run evaluation metrics on the results
+
+### Command Line Options
+
+The script supports various command line options for configuring the caching system and evaluation:
+
+```
+python innovation_resolution.py [options]
+
+Options:
+  --cache-type TYPE      Cache type to use (default: embedding)
+  --cache-backend TYPE   Cache backend type (json or memory, default: json)
+  --cache-path PATH      Path to cache file (default: ./embedding_vectors.json)
+  --no-cache             Disable caching
+  --skip-eval            Skip evaluation step
+  --auto-label           Automatically label consistency samples and generate gold standard files
+```
+
+Examples:
+```bash
+# Use default configuration (JSON file caching)
+python innovation_resolution.py
+
+# Use in-memory caching (faster but not persistent)
+python innovation_resolution.py --cache-backend memory
+
+# Disable caching (regenerate embeddings each time)
+python innovation_resolution.py --no-cache
+
+# Custom cache file location
+python innovation_resolution.py --cache-path "./data/cache/embeddings.json"
+
+# Skip evaluation metrics
+python innovation_resolution.py --skip-eval
+
+# Use automatic labeling for evaluation (no manual labeling required)
+python innovation_resolution.py --auto-label
+```
 
 ### Command Line Options
 
@@ -198,20 +245,111 @@ The solution analyzes the consolidated innovation network to extract insights:
 3. Key organizations based on network centrality
 4. Visualization of the innovation network
 
+### Evaluation Module
+
+The solution includes a comprehensive evaluation module that assesses the quality of the innovation resolution process through four main components:
+
+1. **Consistency Checking**:
+   - Randomly samples merged innovations for human verification
+   - Generates a CSV file with innovation IDs, aliases, and source snippets
+   - Allows human labelers to mark whether the merged items are truly the same innovation
+   - Calculates the overall consistency rate (percentage of correctly merged innovations)
+   - With `--auto-label`, automatically labels samples using LLM or heuristic methods
+
+2. **Entity & Relation Extraction Accuracy**:
+   - Compares automatically extracted entities and relations against human-annotated gold standards
+   - Calculates precision, recall, and F1 score for both entity and relation extraction
+   - Requires gold standard files (`gold_entities.json` and `gold_relations.json`) in the `evaluation` directory
+   - With `--auto-label`, automatically generates gold standard files by sampling from predictions
+
+3. **Knowledge Graph Structure Metrics**:
+   - Calculates comprehensive graph statistics including:
+     - Node and edge counts by type
+     - Average degree and graph density
+     - Connected component analysis
+     - Connectivity ratio
+
+4. **End-to-End QA Testing**:
+   - Performs sample queries on the knowledge graph, such as:
+     - "Which organizations developed innovation X?"
+     - "What innovations are associated with organization Y?"
+   - Saves example query results for manual inspection
+
+### Template Files for Evaluation
+
+The repository includes template files in the `evaluation` directory to help users get started with the evaluation process:
+
+1. **`gold_entities_template.json`**: 
+   - Example format for gold standard entity annotations
+   - Copy this file to `evaluation/gold_entities.json` and expand with your own annotations
+
+2. **`gold_relations_template.json`**: 
+   - Example format for gold standard relation annotations
+   - Copy this file to `evaluation/gold_relations.json` and expand with your own annotations
+
+3. **`consistency_sample_template.csv`**: 
+   - Example of the consistency checking CSV with sample labels
+   - Shows how to fill in the `human_label` column with "Yes" or "No"
+
+4. **`qa_examples_template.json`**: 
+   - Example of the QA testing results format
+   - Shows the expected structure of innovation-organization relationships
+
+To use these templates:
+
+```bash
+# For entity evaluation
+cp evaluation/gold_entities_template.json evaluation/gold_entities.json
+# Edit evaluation/gold_entities.json with your annotations
+
+# For relation evaluation
+cp evaluation/gold_relations_template.json evaluation/gold_relations.json
+# Edit evaluation/gold_relations.json with your annotations
+
+# For consistency checking (after first run generates the sample)
+# Edit evaluation/consistency_sample.csv adding Yes/No in the human_label column
+# Then run the script again to calculate consistency rate
+```
+
+To use the evaluation module, you can:
+
+1. **Prepare Gold Standards** (optional):
+   - Create `evaluation/gold_entities.json` with the format: `[{"name": "...", "type": "Innovation"}, ...]`
+   - Create `evaluation/gold_relations.json` with the format: `[{"innovation": "...", "organization": "...", "relation": "DEVELOPED_BY"}, ...]`
+
+2. **Run the Evaluation**:
+   - Execute `python innovation_resolution.py` to run the complete pipeline with evaluation
+   - For the first run, consistency checking samples will be generated
+   - Fill in the `human_label` column in the generated CSV file
+   - Run the script again to calculate the consistency rate
+
+3. **Review Results**:
+   - Evaluation metrics are printed to console during execution
+   - Complete evaluation results are saved to `evaluation/evaluation_results.json`
+   - QA examples are saved to `evaluation/qa_examples.json`
+
 ## Results
 
-The solution produces the following outputs in the `results/` directory:
+The solution produces the following outputs:
 
-1. `canonical_mapping.json`: Mapping from original innovation IDs to canonical IDs
-2. `consolidated_graph.json`: Complete consolidated knowledge graph
-3. `innovation_stats.json`: Statistics about the innovation network
-4. `multi_source_innovations.json`: Details about innovations mentioned in multiple sources
-5. `key_nodes.json`: Key organizations and innovations based on network analysis
-6. Visualizations:
-   - `innovation_network.png`: Network visualization
-   - `innovation_network_3d.html`: Interactive 3D network visualization
-   - `innovation_stats.png`: Summary statistics visualization
-   - `top_organizations.png`: Top organizations by innovation count
+1. In the `results/` directory:
+   - `canonical_mapping.json`: Mapping from original innovation IDs to canonical IDs
+   - `consolidated_graph.json`: Complete consolidated knowledge graph
+   - `innovation_stats.json`: Statistics about the innovation network
+   - `multi_source_innovations.json`: Details about innovations mentioned in multiple sources
+   - `key_nodes.json`: Key organizations and innovations based on network analysis
+   - Visualizations:
+     - `innovation_network.png`: Network visualization
+     - `innovation_network_3d.html`: Interactive 3D network visualization
+     - `innovation_stats.png`: Summary statistics visualization
+     - `top_organizations.png`: Top organizations by innovation count
+
+2. In the `evaluation/` directory:
+   - `consistency_sample.csv`: Samples for manual consistency checking
+   - `evaluation_results.json`: Comprehensive evaluation metrics
+   - `qa_examples.json`: Example QA queries and results
+   - `pred_entities.json`: Predicted entities
+   - `pred_relations.json`: Predicted relations
 
 ## Dependencies
 
