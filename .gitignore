@@ -1,6 +1,4 @@
 data/
-data.tar
-data.tar.bz2
 keys/
 logs/
 result/
@@ -8,3 +6,7 @@ venvs/
 __pycache__/
 .DS_Store
 *.json
+*.png
+*.html
+*.tar
+*.tar.bz2
