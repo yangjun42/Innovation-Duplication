@@ -34,6 +34,17 @@ from innovation_utils import (
     calculate_innovation_statistics
 )
 
+from utils.cluster.cluster_algorithms import (
+    cluster_hdbscan,
+    cluster_kmeans,
+    cluster_agglomerative,
+    cluster_spectral
+)
+from utils.cluster.graph_clustering import (
+    graph_threshold_clustering,
+    graph_kcore_clustering
+)
+
 # Constants
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
@@ -586,141 +597,224 @@ def compute_similarity(emb1, emb2) -> float:
     return cosine_similarity(emb1, emb2)[0][0]
 
 
-def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, 
-                              cache_config: Dict = None) -> Dict[str, str]:
+def resolve_innovation_duplicates(
+    df_relationships: pd.DataFrame,
+    model=None,
+    cache_config: Dict = None,
+    method: str = "hdbscan",
+    **method_kwargs
+) -> Dict[str, str]:
     """
     Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
 
     Args:
-        df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes and their connections.
-        model (callable, optional): Embedding model function that converts text to vector. Required if embeddings need to be generated.
-        cache_config: 缓存配置，包含以下选项:
+        df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes.
+        model (callable, optional): Embedding model function that converts text -> vector.
+        cache_config (Dict, optional): 缓存配置，包含以下字段:
             - type: 缓存类型 ('embedding')
-            - backend: 后端类型 ('json' 或 'memory')
+            - backend: 后端类型 ('json' or 'memory')
             - path: 缓存文件路径
             - use_cache: 是否启用缓存
+        method (str, optional): Which clustering method to use. One of:
+            - "hdbscan"
+            - "kmeans"
+            - "agglomerative"
+            - "spectral"
+            - "graph_threshold"
+            - "graph_kcore"
+          Default: "hdbscan".
+        **method_kwargs: Additional keyword args to pass into the chosen clustering function.
+          For example:
+            - if method="hdbscan", you can pass min_cluster_size=2, metric="cosine", cluster_selection_method="eom".
+            - if method="kmeans", you can pass n_clusters=450, random_state=42.
+            - if method="agglomerative", you can pass n_clusters=450, affinity="cosine", linkage="average".
+            - if method="spectral", you can pass n_clusters=450, affinity="nearest_neighbors", n_neighbors=10.
+            - if method="graph_threshold", you can pass similarity_threshold=0.85, use_cosine=True.
+            - if method="graph_kcore", you can pass similarity_threshold=0.85, k_core=15, use_cosine=True.
 
     Returns:
-        Dict[str, str]: A dictionary mapping each innovation ID to its canonical ID (representative of a cluster).
+        Dict[str, str]: Mapping from each innovation ID -> its canonical cluster ID.
     """
     print("Resolving innovation duplicates...")
-    
-    # 默认缓存配置
+    # -------- 默认缓存配置 --------
     default_cache_config = {
         "type": "embedding",
-        "backend": "json", 
+        "backend": "json",
         "path": "./embedding_vectors.json",
         "use_cache": True
     }
-    
-    # 合并配置
     if cache_config is None:
         cache_config = {}
-    
     config = {**default_cache_config, **cache_config}
 
-    # Step 1: Extract all unique Innovation nodes from the relationship table
-    innovations = df_relationships[df_relationships['source_type'] == 'Innovation']
-    unique_innovations = innovations.drop_duplicates(subset=['source_id'])
-    print(f"Found {len(unique_innovations)} unique innovations")
+    # Step 1: 从 DataFrame 中筛选出所有 source_type == "Innovation"，并去重
+    innovations = df_relationships[df_relationships["source_type"] == "Innovation"]
+    unique_innovations = innovations.drop_duplicates(subset=["source_id"]).reset_index(drop=True)
+    print(f"Found {len(unique_innovations)} unique innovations.")
+    if unique_innovations.empty:
+        return {}
 
-    # Step 2: Construct a detailed textual context for each innovation
-    # This includes: name, description, developers, and relationship-based context
-    innovation_features = {}
+    # Step 2: 为每个 Innovation 构建一个文本上下文（包含名称、描述、开发组织、其他关系说明）
+    innovation_features: Dict[str, str] = {}
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
-        innovation_id = row['source_id']
-        if innovation_id not in innovation_features:
-            source_name = str(row.get('source_english_id', ''))
-            source_description = str(row.get('source_description', ''))
-            context = f"Innovation name: {source_name}. Description: {source_description}."
+        innovation_id = row["source_id"]
+        if innovation_id in innovation_features:
+            continue
 
-            # Append developers (organizations linked by DEVELOPED_BY relationship)
-            developed_by = df_relationships[
-                (df_relationships['source_id'] == innovation_id) &
-                (df_relationships['relationship_type'] == 'DEVELOPED_BY')
-            ]['target_english_id'].dropna().unique().tolist()
+        source_name = str(row.get("source_english_id", "")).strip()
+        source_desc = str(row.get("source_description", "")).strip()
+        context = f"Innovation name: {source_name}. Description: {source_desc}."
 
-            if developed_by:
-                context += f" Developed by: {', '.join(developed_by)}."
+        # 如果有 DEVELOPED_BY 关系，则拼接开发组织
+        dev_by = (
+            df_relationships[
+                (df_relationships["source_id"] == innovation_id) &
+                (df_relationships["relationship_type"] == "DEVELOPED_BY")
+            ]["target_english_id"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        if dev_by:
+            context += " Developed by: " + ", ".join(dev_by) + "."
 
-            # Add additional relationships and their target descriptions
-            related_rows = df_relationships[df_relationships['source_id'] == innovation_id]
-            for _, rel_row in related_rows.iterrows():
-                rel_desc = str(rel_row.get('relationship description', '')).strip()
-                target_name = str(rel_row.get('target_english_id', '')).strip()
-                target_desc = str(rel_row.get('target_description', '')).strip()
-                if rel_desc and target_name and target_desc:
-                    context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
+        # 将其他关系（relationship description + target 英文名 + target 描述）拼接进 context
+        related_rows = df_relationships[df_relationships["source_id"] == innovation_id]
+        for _, rel_row in related_rows.iterrows():
+            rel_desc = str(rel_row.get("relationship description", "")).strip()
+            target_name = str(rel_row.get("target_english_id", "")).strip()
+            target_desc = str(rel_row.get("target_description", "")).strip()
+            if rel_desc and target_name and target_desc:
+                context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
 
-            innovation_features[innovation_id] = context
+        innovation_features[innovation_id] = context
 
-    # Step 3: Generate embeddings or use text features directly
+    # Step 3: 生成或加载这些上下文的 embeddings
     print("Generating features for similarity comparison...")
-    
-    # 初始化缓存系统
+    # 假设 CacheFactory.create_cache 可以根据 config 创建出缓存实例，支持 load()/get_missing_keys()/update() 等接口
     cache = CacheFactory.create_cache(
         cache_type=config["type"],
         backend_type=config["backend"],
         cache_path=config["path"],
         use_cache=config["use_cache"]
     )
-    
-    # 加载缓存
-    embeddings = cache.load()
-    
-    # 找出未缓存的ID
-    missing_ids = cache.get_missing_keys(list(innovation_features.keys()))
-    
-    # 生成新的embeddings
+
+    # 从缓存里 load 出已经存在的 embedding
+    embeddings: Dict[str, np.ndarray] = cache.load()  # { innovation_id: np.array(...) }
+    all_ids = list(innovation_features.keys())
+    missing_ids = cache.get_missing_keys(all_ids)
+
     if missing_ids:
         print(f"Generating {len(missing_ids)} new embeddings...")
-        new_embeddings = {}
-        
-        for id in tqdm(missing_ids, desc="Generating embeddings"):
-            text = innovation_features[id]
-            new_embeddings[id] = get_embedding(text, model)
-        
-        # 更新缓存
-        cache.update(new_embeddings)
-        embeddings.update(new_embeddings)
+        new_embd: Dict[str, np.ndarray] = {}
+        for iid in tqdm(missing_ids, desc="Embedding innovations"):
+            txt = innovation_features[iid]
+            new_embd[iid] = get_embedding(txt, model)
+        cache.update(new_embd)
+        embeddings.update(new_embd)
 
-    # Step 4: Compute cosine similarity between all embedding vectors
-    # Group similar innovations into clusters based on similarity threshold
-    print("Clustering similar innovations...")
-    threshold = 0.85
-    embedding_items = list(embeddings.items())
+    # 确保 embeddings 的顺序和 unique_innovations 一致
+    embedding_items = [(iid, embeddings[iid]) for iid in all_ids]
     innovation_ids = [item[0] for item in embedding_items]
-    embedding_matrix = np.array([item[1] for item in embedding_items])
-    similarity_matrix = cosine_similarity(embedding_matrix)
+    embedding_matrix = np.vstack([item[1] for item in embedding_items])  # shape = (N, D)
 
-    clusters = {}
-    processed = set()
+    # Step 4: 根据用户指定的 method，调用对应的聚类算法
+    print(f"Clustering similar innovations with method='{method}'...")
+    canonical_mapping: Dict[str, str] = {}
 
-    for i, id1 in enumerate(tqdm(innovation_ids, desc="Clustering innovations")):
-        if id1 in processed:
-            continue
+    method_lower = method.lower()
+    if method_lower in {"hdbscan", "kmeans", "agglomerative", "spectral"}:
+        # -------- 1) 平面簇算法 --------
+        if method_lower == "hdbscan":
+            min_cluster_size = method_kwargs.get("min_cluster_size", 2)
+            metric = method_kwargs.get("metric", "cosine")
+            cluster_selection_method = method_kwargs.get("cluster_selection_method", "eom")
+            labels = cluster_hdbscan(
+                embedding_matrix=embedding_matrix,
+                min_cluster_size=min_cluster_size,
+                metric=metric,
+                cluster_selection_method=cluster_selection_method
+            )
+        elif method_lower == "kmeans":
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            random_state = method_kwargs.get("random_state", 42)
+            labels = cluster_kmeans(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                random_state=random_state
+            )
+        elif method_lower == "agglomerative":
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            affinity = method_kwargs.get("affinity", "cosine")
+            linkage = method_kwargs.get("linkage", "average")
+            labels = cluster_agglomerative(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                affinity=affinity,
+                linkage=linkage
+            )
+        else:  # spectral
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            affinity = method_kwargs.get("affinity", "nearest_neighbors")
+            n_neighbors = method_kwargs.get("n_neighbors", 10)
+            labels = cluster_spectral(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                affinity=affinity,
+                n_neighbors=n_neighbors
+            )
 
-        cluster = [id1]
-        for j, id2 in enumerate(innovation_ids):
-            if id1 != id2 and id2 not in processed:
-                similarity = similarity_matrix[i, j]
-                if similarity > threshold:
-                    cluster.append(id2)
-                    processed.add(id2)
+        # 把 label -> cluster 成员映射出来
+        clusters: Dict[int, List[str]] = {}
+        for idx, lab in enumerate(labels):
+            if lab == -1:
+                # HDBSCAN 的 -1 (噪声) 单独成一簇
+                key = f"noise_{innovation_ids[idx]}"
+                clusters.setdefault(key, []).append(innovation_ids[idx])
+            else:
+                clusters.setdefault(int(lab), []).append(innovation_ids[idx])
 
-        canonical_id = id1  # use the first item as the canonical (representative) ID
-        clusters[canonical_id] = cluster
-        processed.add(id1)
+        # 把每个簇里的第一个成员设为 canonical_id
+        for lab_key, members in clusters.items():
+            canonical_id = members[0]
+            for mid in members:
+                canonical_mapping[mid] = canonical_id
 
-    # Step 5: Build a mapping from each innovation ID to its canonical representative
-    canonical_mapping = {}
-    for canonical_id, cluster_ids in clusters.items():
-        for innovation_id in cluster_ids:
-            canonical_mapping[innovation_id] = canonical_id
+    elif method_lower in {"graph_threshold", "graph_kcore"}:
+        # -------- 2) 图聚类算法 --------
+        sim_threshold = method_kwargs.get("similarity_threshold", 0.85)
+        use_cos = method_kwargs.get("use_cosine", True)
 
-    print(f"Found {len(clusters)} unique innovation clusters")
-    print(f"Reduced from {len(innovation_features)} to {len(clusters)} innovations")
+        if method_lower == "graph_threshold":
+            clusters_dict = graph_threshold_clustering(
+                embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
+                similarity_threshold=sim_threshold,
+                use_cosine=use_cos
+            )
+        else:  # "graph_kcore"
+            k_core = method_kwargs.get("k_core", 15)
+            clusters_dict = graph_kcore_clustering(
+                embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
+                similarity_threshold=sim_threshold,
+                k_core=k_core,
+                use_cosine=use_cos
+            )
 
+        # clusters_dict 已经是 { canonical_id: [member_id,...], ... }
+        for canonical_id, members in clusters_dict.items():
+            for mid in members:
+                canonical_mapping[mid] = canonical_id
+
+    else:
+        raise ValueError(
+            f"Unknown clustering method '{method}'.\n"
+            "请选择：['hdbscan','kmeans','agglomerative','spectral','graph_threshold','graph_kcore']。"
+        )
+
+    print(f"Found {len(set(canonical_mapping.values()))} unique innovation clusters "
+          f"(reduced from {len(unique_innovations)}).")
     return canonical_mapping
 
 
@@ -1028,13 +1122,17 @@ def main():
     if embed_model is None:
         print("Warning: Embedding model not available. Using TF-IDF embeddings as fallback.")
     
-    # Step 3: Resolve innovation duplicates
+    # Step 3: Resolve innovation duplicates  people can choose the different cluster in future
     canonical_mapping = resolve_innovation_duplicates(
-        df_relationships, 
-        embed_model,
-        cache_config=cache_config
+        df_relationships=df_relationships,
+        model=embed_model,
+        cache_config=cache_config,
+        method="hdbscan",
+        min_cluster_size=3,
+        metric="cosine",
+        cluster_selection_method="eom"
     )
-    
+        
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
     
