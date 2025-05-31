@@ -23,6 +23,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 from tqdm import tqdm
 
+from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureOpenAIEmbeddings
+
+from dotenv import load_dotenv
+
+
 # Import local modules
 from innovation_utils import (
     compute_similarity_matrix,
@@ -175,96 +181,55 @@ def initialize_openai_client():
     Initialize the OpenAI client using the API keys.
     
     Returns:
-        OpenAI client or None if initialization fails
+        llm, embedding model
     """
-    try:
-        from langchain_openai import AzureChatOpenAI
-        import json
+
+    load_dotenv()
+
+    # 使用Azure OpenAI初始化模型
+    llm = AzureChatOpenAI(
+        api_key = os.environ["AZURE_OPENAI_API_KEY"],
+        azure_endpoint = os.environ["AZURE_OPENAI_ENDPOINT"],
+
+        azure_deployment = "gpt-4.1-mini",
+        api_version = "2024-10-21",
+        temperature = 0
+    )
+
+
+    # Embedding 向量的维度(1024 + 512)
+    dim = 1536
+    bigest_dim = 3072
+
+    embedding_model = AzureOpenAIEmbeddings(
+        api_key = os.environ["AZURE_OPENAI_API_KEY"],
+        azure_endpoint = os.environ["AZURE_OPENAI_ENDPOINT"],
         
-        config_path = os.path.join(DATA_DIR, 'keys', 'azure_config.json')
-        
-        if not os.path.exists(config_path):
-            print(f"API configuration file not found at {config_path}")
-            print("Please obtain API keys and create the configuration file as described in the README.md")
-            return None
-        
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
-        # Try to initialize with different models in order of preference
-        for model_name in ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini']:
-            if model_name in config:
-                try:
-                    model = AzureChatOpenAI(
-                        model=model_name,
-                        api_key=config[model_name]['api_key'],
-                        azure_endpoint=config[model_name]['api_base'],
-                        api_version=config[model_name]['api_version']
-                    )
-                    print(f"Successfully initialized {model_name}")
-                    return model
-                except Exception as e:
-                    print(f"Failed to initialize {model_name}: {e}")
-        
-        print("Failed to initialize any OpenAI model")
-        return None
-    
-    except ImportError:
-        print("Required packages not installed. Please install langchain-openai and openai.")
-        return None
+        azure_deployment = "text-embedding-3-large",
+        api_version  = "2024-10-21",
+        dimensions = dim
+    )
+
+    return llm, embedding_model
 
 
 def get_embedding(text: str, model) -> np.ndarray:
     """
-    Get embedding for a text using text hashing method when API is not available.
+    Get embedding for a text using OpenAI model.
     
     Args:
         text: Text to embed
-        model: OpenAI model (not used in this implementation)
+        model: OpenAI model
     
     Returns:
         np.ndarray: Embedding vector
     """
-    # 不再尝试调用OpenAI API，直接使用哈希方法生成"伪嵌入"
-    try:
-        # 使用文本哈希方法创建一个简单的嵌入
-        import hashlib
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        
-        # 使用TF-IDF来创建更有意义的文本表示
-        vectorizer = TfidfVectorizer(max_features=768)
-        # 由于TF-IDF需要多个文档，我们创建一个简单的集合
-        # 将文本分割成句子
-        sentences = [s.strip() for s in text.replace('\n', ' ').split('.') if s.strip()]
-        if len(sentences) < 2:
-            sentences = text.split()  # 如果没有句子，就用单词
-        
-        # 确保有足够的文本进行向量化
-        if len(sentences) < 2:
-            sentences = [text, "placeholder"]
-            
-        # 向量化
-        tfidf_matrix = vectorizer.fit_transform(sentences)
-        # 取平均作为最终表示
-        embedding = tfidf_matrix.mean(axis=0).A[0]
-        
-        # 如果维度不够1536，填充到所需大小
-        if len(embedding) < 1536:
-            embedding = np.pad(embedding, (0, 1536-len(embedding)), 'constant')
-        
-        # 如果维度超过1536，截断 
-        # TODO
-        if len(embedding) > 1536:
-            embedding = embedding[:1536]
-            
-        return embedding
-    except Exception as e:
-        print(f"Error creating text embedding: {e}")
-        # 返回随机嵌入作为后备方案
-        return np.random.rand(1536)
+    embedding = model.embed_query(text)
+
+    return embedding
 
 
-def compute_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
+def compute_similarity(emb1, emb2) -> float:
     """
     Compute cosine similarity between two embeddings.
     
@@ -275,11 +240,9 @@ def compute_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
     Returns:
         float: Cosine similarity score
     """
-    # Reshape embeddings to 2D arrays for sklearn
-    emb1_reshaped = emb1.reshape(1, -1)
-    emb2_reshaped = emb2.reshape(1, -1)
-    
-    return cosine_similarity(emb1_reshaped, emb2_reshaped)[0][0]
+    emb1 = np.array(emb1).reshape(1, -1)
+    emb2 = np.array(emb2).reshape(1, -1)
+    return cosine_similarity(emb1, emb2)[0][0]
 
 
 def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) -> Dict[str, str]:
@@ -325,8 +288,30 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) ->
     # Step 3: Generate embeddings or use text features directly
     print("Generating features for similarity comparison...")
     embeddings = {}
-    for id, features in tqdm(innovation_features.items(), desc="Processing innovations"):
-        embeddings[id] = get_embedding(features, model)
+
+    file_path = "./embedding_vectors.json"
+
+    
+    # 1. 如果缓存文件存在，直接加载
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            embeddings = json.load(f)
+        print(f"Loaded {len(embeddings)} embeddings from cache.")
+    
+    # 2. 找出还未生成 embedding 的部分
+    missing_ids = [id for id in innovation_features if id not in embeddings]
+
+    if missing_ids:
+        print(f"Generating {len(missing_ids)} new embeddings...")
+        for id in tqdm(missing_ids, desc="Generating embeddings"):
+            features = innovation_features[id]
+            embeddings[id] = get_embedding(features, model)
+
+        # 保存更新后的 embedding 到 JSON 文件
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(embeddings, f, ensure_ascii=False, indent=2)
+
+        print(f"Saved updated embeddings to {file_path}.")
     
     # Step 4: Cluster innovations using similarity threshold
     print("Clustering similar innovations...")
@@ -901,10 +886,10 @@ def main():
     df_relationships = load_and_combine_data()
     
     # Step 2: Initialize OpenAI client
-    model = initialize_openai_client()
+    llm, embed_model = initialize_openai_client()
     
     # Step 3: Resolve innovation duplicates
-    canonical_mapping = resolve_innovation_duplicates(df_relationships, model)
+    canonical_mapping = resolve_innovation_duplicates(df_relationships, embed_model)
     
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
