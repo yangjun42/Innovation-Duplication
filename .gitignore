@@ -10,3 +10,4 @@ __pycache__/
 *.html
 *.tar
 *.tar.bz2
+*.csv
