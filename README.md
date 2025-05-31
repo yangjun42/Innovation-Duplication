@@ -63,17 +63,26 @@ Innovation-Duplication/
      "gpt-4o-mini": {
        "api_key": "YOUR_API_KEY",
        "api_base": "YOUR_AZURE_ENDPOINT",
-       "api_version": "API_VERSION"
+       "api_version": "API_VERSION",
+       "deployment": "gpt-4o-mini",
+       "eval_deployment": "gpt-4o-mini",
+       "emb_deployment": "text-embedding-3-large"
      },
      "gpt-4.1-mini": {
        "api_key": "YOUR_API_KEY",
        "api_base": "YOUR_AZURE_ENDPOINT",
-       "api_version": "API_VERSION"
+       "api_version": "API_VERSION",
+       "deployment": "gpt-4.1-mini",
+       "eval_deployment": "gpt-4.1-mini",
+       "emb_deployment": "text-embedding-3-large"
      },
      "gpt-4.1": {
        "api_key": "YOUR_API_KEY",
        "api_base": "YOUR_AZURE_ENDPOINT", 
-       "api_version": "API_VERSION"
+       "api_version": "API_VERSION",
+       "deployment": "gpt-4.1",
+       "eval_deployment": "gpt-4.1",
+       "emb_deployment": "text-embedding-3-large"
      }
    }
    ```
@@ -99,6 +108,35 @@ The script will perform the following steps:
 6. Visualize the results
 7. Export the results to the `results/` directory
 
+### Command Line Options
+
+The script now supports various command line options for configuring the caching system:
+
+```
+python innovation_resolution.py [options]
+
+Options:
+  --cache-type TYPE      Cache type to use (default: embedding)
+  --cache-backend TYPE   Cache backend type (json or memory, default: json)
+  --cache-path PATH      Path to cache file (default: ./embedding_vectors.json)
+  --no-cache             Disable caching
+```
+
+Examples:
+```bash
+# Use default configuration (JSON file caching)
+python innovation_resolution.py
+
+# Use in-memory caching (faster but not persistent)
+python innovation_resolution.py --cache-backend memory
+
+# Disable caching (regenerate embeddings each time)
+python innovation_resolution.py --no-cache
+
+# Custom cache file location
+python innovation_resolution.py --cache-path "./data/cache/embeddings.json"
+```
+
 ## Solution Details
 
 ### Innovation Resolution
@@ -110,13 +148,34 @@ The solution uses semantic similarity through embeddings to identify when differ
    - Innovation description
    - Organizations that developed it
 
-2. These features are converted to embeddings using OpenAI's embedding API
+2. These features are converted to embeddings using OpenAI's embedding API or using TF-IDF as fallback
 
 3. Cosine similarity is computed between all innovation pairs
 
 4. Innovations with similarity above a threshold (default: 0.85) are considered duplicates
 
 5. Duplicate innovations are mapped to a canonical innovation ID
+
+### Caching System
+
+The solution uses a modular caching system for embeddings to improve performance:
+
+1. **Architecture**:
+   - Abstract `CacheBackend` protocol for different backend implementations
+   - `JsonFileCache`: Persistent file-based caching (default)
+   - `MemoryCache`: Fast in-memory caching
+   - `EmbeddingCache`: Unified front-end with configurable backend
+   - `CacheFactory`: Factory for creating cache instances
+
+2. **Features**:
+   - Automatic embedding caching to avoid redundant API calls
+   - Configurable cache backend (file-based or in-memory)
+   - Option to disable caching completely
+   - Automatic recovery from cache loading errors
+
+3. **Extensibility**:
+   - Designed to be easily extended with new cache backends
+   - Compatible with both OpenAI embeddings and TF-IDF fallback
 
 ### Knowledge Graph Consolidation
 
@@ -150,6 +209,7 @@ The solution produces the following outputs in the `results/` directory:
 5. `key_nodes.json`: Key organizations and innovations based on network analysis
 6. Visualizations:
    - `innovation_network.png`: Network visualization
+   - `innovation_network_3d.html`: Interactive 3D network visualization
    - `innovation_stats.png`: Summary statistics visualization
    - `top_organizations.png`: Top organizations by innovation count
 
@@ -159,8 +219,8 @@ Main dependencies include:
 - pandas, numpy: Data processing
 - pydantic: Data modeling
 - langchain-openai, openai: API integration with OpenAI models
-- networkx, matplotlib, seaborn: Visualization and network analysis
-- scikit-learn: Machine learning utilities
+- networkx, matplotlib, seaborn, plotly: Visualization and network analysis
+- scikit-learn: Machine learning utilities for TF-IDF fallback
 
 See `requirements.txt` for the complete list.
 
