@@ -22,6 +22,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 import plotly.graph_objects as go
 import plotly.express as px
 from tqdm import tqdm
+from vis import visualize_network_tufte
+
+from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureOpenAIEmbeddings
 
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
@@ -43,6 +47,18 @@ from innovation_utils import (
     compute_similarity_matrix,
     find_potential_duplicates,
     calculate_innovation_statistics
+)
+from local_entity_processing import Node, Relationship
+
+from utils.cluster.cluster_algorithms import (
+    cluster_hdbscan,
+    cluster_kmeans,
+    cluster_agglomerative,
+    cluster_spectral
+)
+from utils.cluster.graph_clustering import (
+    graph_threshold_clustering,
+    graph_kcore_clustering
 )
 
 # Constants
@@ -195,7 +211,6 @@ class MemoryCache:
     
     def contains(self, key: str) -> bool:
         return key in self.cache_data
-
 
 class EmbeddingCache:
     """
@@ -357,15 +372,193 @@ class CacheFactory:
             raise ValueError(f"Unsupported cache type: {cache_type}")
 
 
-def load_and_combine_data() -> pd.DataFrame:
+# 添加通用的文本过滤器
+def is_valid_entity_name(name: str) -> bool:
+    """
+    检查实体名称是否有效，过滤掉明显无效的实体。
+    
+    Args:
+        name: 实体名称
+        
+    Returns:
+        bool: 是否是有效的实体名称
+    """
+    if not name or not isinstance(name, str):
+        return False
+    
+    # 过滤掉太短的名称
+    if len(name.strip()) < 3:
+        return False
+    
+    # 过滤掉只包含数字或特殊字符的名称
+    if all(not c.isalpha() for c in name):
+        return False
+    
+    # 过滤掉常见的占位符名称
+    invalid_patterns = [
+        'null', 'none', 'undefined', 'n/a', 'unknown', 
+        'temp_', 'unknown', 'placeholder', 'example'
+    ]
+    
+    name_lower = name.lower()
+    for pattern in invalid_patterns:
+        if pattern in name_lower:
+            # 特殊处理：如果是以temp_开头但后面有有意义的内容，仍然保留
+            if pattern == 'temp_' and len(name) > 10 and any(c.isalpha() for c in name[5:]):
+                continue
+            return False
+    
+    return True
+
+
+def extract_entities_from_document(doc, pred_entities: List[Dict] = None) -> List[Dict]:
+    """
+    Extract innovation and organization entities from document.
+    Also accumulate extracted entities in the pred_entities list if provided.
+    
+    Args:
+        doc: Source document
+        pred_entities: Optional list to accumulate extracted entities
+        
+    Returns:
+        List of entity dictionaries in the format {"name": str, "type": str}
+    """
+    entities = []
+    
+    # Extract entities from the document (assuming graph_doc format)
+    if hasattr(doc, 'nodes'):
+        for node in doc.nodes:
+            # 获取实体名称，优先使用english_id
+            entity_name = node.properties.get('english_id', node.id) if hasattr(node, 'properties') else node.id
+            
+            # 检查实体名称是否有效
+            if not is_valid_entity_name(entity_name):
+                continue
+                
+            entity = {
+                "name": entity_name,
+                "type": node.type
+            }
+            
+            # 添加描述信息，便于后续过滤和评估
+            if hasattr(node, 'properties') and 'description' in node.properties:
+                entity["description"] = node.properties['description']
+            
+            entities.append(entity)
+            
+            # Accumulate to prediction list if provided
+            if pred_entities is not None:
+                pred_entities.append(entity)
+    
+    return entities
+
+
+def is_valid_relationship(innovation: str, organization: str, relation_type: str) -> bool:
+    """
+    检查关系是否有效，过滤掉明显无效的关系。
+    
+    Args:
+        innovation: 创新名称
+        organization: 组织名称
+        relation_type: 关系类型
+        
+    Returns:
+        bool: 是否是有效的关系
+    """
+    # 检查创新和组织名称是否有效
+    if not is_valid_entity_name(innovation) or not is_valid_entity_name(organization):
+        return False
+    
+    # 检查关系类型是否有效
+    if relation_type not in ["DEVELOPED_BY", "COLLABORATION"]:
+        return False
+    
+    # 过滤掉创新和组织相同的情况
+    if innovation.lower() == organization.lower():
+        return False
+    
+    return True
+
+
+def extract_relationships_from_document(doc, pred_relations: List[Dict] = None) -> List[Dict]:
+    """
+    Extract relationships from document.
+    Also accumulate extracted relationships in the pred_relations list if provided.
+    
+    Args:
+        doc: Source document
+        pred_relations: Optional list to accumulate extracted relationships
+        
+    Returns:
+        List of relationship dictionaries in the format {"innovation": str, "organization": str, "relation": str}
+    """
+    relationships = []
+    
+    # Extract relationships from the document (assuming graph_doc format)
+    if hasattr(doc, 'relationships'):
+        # 首先获取节点的english_id映射
+        node_english_id = {}
+        if hasattr(doc, 'nodes'):
+            for node in doc.nodes:
+                if hasattr(node, 'properties') and 'english_id' in node.properties:
+                    node_english_id[node.id] = node.properties['english_id']
+                else:
+                    node_english_id[node.id] = node.id
+        
+        for rel in doc.relationships:
+            # 只包含DEVELOPED_BY和COLLABORATION关系
+            if rel.type in ["DEVELOPED_BY", "COLLABORATION"]:
+                # 获取源和目标的名称，优先使用english_id
+                source_name = node_english_id.get(rel.source, rel.source)
+                target_name = node_english_id.get(rel.target, rel.target)
+                
+                # 确保source/target是正确的创新/组织映射
+                if rel.source_type == "Innovation" and rel.target_type == "Organization":
+                    innovation_name = source_name
+                    organization_name = target_name
+                elif rel.source_type == "Organization" and rel.target_type == "Innovation":
+                    innovation_name = target_name
+                    organization_name = source_name
+                else:
+                    # 如果关系不是创新-组织之间的关系，跳过
+                    continue
+                
+                # 检查关系是否有效
+                if not is_valid_relationship(innovation_name, organization_name, rel.type):
+                    continue
+                
+                relationship = {
+                    "innovation": innovation_name,
+                    "organization": organization_name,
+                    "relation": rel.type
+                }
+                
+                # 添加描述信息，便于后续过滤和评估
+                if hasattr(rel, 'properties') and 'description' in rel.properties:
+                    relationship["description"] = rel.properties['description']
+                
+                relationships.append(relationship)
+                
+                # Accumulate to prediction list if provided
+                if pred_relations is not None:
+                    pred_relations.append(relationship)
+    
+    return relationships
+
+
+def load_and_combine_data() -> Tuple[pd.DataFrame, List[Dict], List[Dict]]:
     """
     Load relationship data from both company websites and VTT domain,
-    combine them into a single dataframe.
+    combine them into a single dataframe, and collect entities and relationships.
     
     Returns:
-        pd.DataFrame: Combined relationship dataframe
+        Tuple of (combined dataframe, all_pred_entities, all_pred_relations)
     """
     print("Loading data from company websites...")
+    
+    # Initialize lists to collect predicted entities and relationships
+    all_pred_entities = []
+    all_pred_relations = []
     
     # Load company domain data
     df_company = pd.read_csv(os.path.join(DATAFRAMES_DIR, 'vtt_mentions_comp_domain.csv'))
@@ -381,7 +574,14 @@ def load_and_combine_data() -> pd.DataFrame:
                 file_path = os.path.join(GRAPH_DOCS_COMPANY, f"{row['Company name'].replace(' ','_')}_{i}.pkl")
                 if os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
-                        graph_doc = pickle.load(f)[0]
+                        graph_docs = pickle.load(f)
+                        graph_doc = graph_docs[0]
+                    
+                    # Extract and collect entities
+                    extract_entities_from_document(graph_doc, all_pred_entities)
+                    
+                    # Extract and collect relationships
+                    extract_relationships_from_document(graph_doc, all_pred_relations)
                     
                     node_description = {}
                     node_en_id = {}
@@ -430,7 +630,14 @@ def load_and_combine_data() -> pd.DataFrame:
                 file_path = os.path.join(GRAPH_DOCS_VTT, f"{row['Vat_id'].replace(' ','_')}_{index_source}.pkl")
                 if os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
-                        graph_doc = pickle.load(f)[0]
+                        graph_docs = pickle.load(f)
+                        graph_doc = graph_docs[0]
+                    
+                    # Extract and collect entities
+                    extract_entities_from_document(graph_doc, all_pred_entities)
+                    
+                    # Extract and collect relationships
+                    extract_relationships_from_document(graph_doc, all_pred_relations)
                     
                     node_description = {}
                     node_en_id = {}
@@ -473,7 +680,7 @@ def load_and_combine_data() -> pd.DataFrame:
     combined_df = pd.concat([df_relationships_comp_url, df_relationships_vtt_domain], ignore_index=True)
     print(f"Combined dataframe contains {len(combined_df)} relationships")
     
-    return combined_df
+    return combined_df, all_pred_entities, all_pred_relations
 
 
 def initialize_openai_client():
@@ -484,9 +691,9 @@ def initialize_openai_client():
         llm, embedding model
     """
     import json
-    
-    config_path = os.path.join(DATA_DIR, 'keys', 'azure_config.json')
-    
+    # ✅ 优先从环境变量读取路径
+    config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
+
     if not os.path.exists(config_path):
         print(f"API configuration file not found at {config_path}")
         print("Please obtain API keys and create the configuration file as described in the README.md")
@@ -494,11 +701,7 @@ def initialize_openai_client():
     
     with open(config_path, 'r') as f:
         config = json.load(f)
-    
-    # Dimensions for embedding
     dim = 3072
-    
-    # Initialize LLM with gpt-4.1-mini
     model_name = 'gpt-4.1-mini'
     if model_name in config:
         llm = AzureChatOpenAI(
@@ -509,7 +712,6 @@ def initialize_openai_client():
             temperature=0
         )
         
-        # Initialize embedding model
         embedding_model = AzureOpenAIEmbeddings(
             api_key=config[model_name]['api_key'],
             azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
@@ -606,26 +808,47 @@ def compute_similarity(emb1, emb2) -> float:
     return cosine_similarity(emb1, emb2)[0][0]
 
 
-def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, vector_store = None,
-                              cache_config: Dict = None) -> Dict[str, str]:
+def resolve_innovation_duplicates(
+    df_relationships: pd.DataFrame, 
+    model=None, 
+    vector_store = None,
+    cache_config: Dict = None,
+    method: str = "hdbscan",
+    **method_kwargs) -> Dict[str, str]:
     """
     Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
-
+    
     Args:
-        df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes and their connections.
-        model (callable, optional): Embedding model function that converts text to vector. Required if embeddings need to be generated.
-        cache_config: 缓存配置，包含以下选项:
+        df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes.
+        model (callable, optional): Embedding model function that converts text -> vector.
+        vector_store (callable, optional): Azure AI search function, containing text emb. feat.
+        cache_config (Dict, optional): 缓存配置，包含以下字段:
             - type: 缓存类型 ('embedding')
-            - backend: 后端类型 ('json' 或 'memory')
+            - backend: 后端类型 ('json' or 'memory')
             - path: 缓存文件路径
             - use_cache: 是否启用缓存
+        method (str, optional): Which clustering method to use. One of:
+            - "hdbscan"
+            - "kmeans"
+            - "agglomerative"
+            - "spectral"
+            - "graph_threshold"
+            - "graph_kcore"
+          Default: "hdbscan".
+        **method_kwargs: Additional keyword args to pass into the chosen clustering function.
+          For example:
+            - if method="hdbscan", you can pass min_cluster_size=2, metric="cosine", cluster_selection_method="eom".
+            - if method="kmeans", you can pass n_clusters=450, random_state=42.
+            - if method="agglomerative", you can pass n_clusters=450, affinity="cosine", linkage="average".
+            - if method="spectral", you can pass n_clusters=450, affinity="nearest_neighbors", n_neighbors=10.
+            - if method="graph_threshold", you can pass similarity_threshold=0.85, use_cosine=True.
+            - if method="graph_kcore", you can pass similarity_threshold=0.85, k_core=15, use_cosine=True.
 
     Returns:
-        Dict[str, str]: A dictionary mapping each innovation ID to its canonical ID (representative of a cluster).
+        Dict[str, str]: Mapping from each innovation ID -> its canonical cluster ID.
     """
     print("Resolving innovation duplicates...")
     
-    # 默认缓存配置
     default_cache_config = {
         "type": "embedding",
         "backend": "json", 
@@ -639,110 +862,181 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, ve
     
     config = {**default_cache_config, **cache_config}
 
-    # Step 1: Extract all unique Innovation nodes from the relationship table
-    innovations = df_relationships[df_relationships['source_type'] == 'Innovation']
-    unique_innovations = innovations.drop_duplicates(subset=['source_id'])
-    print(f"Found {len(unique_innovations)} unique innovations")
+    # Step 1: 从 DataFrame 中筛选出所有 source_type == "Innovation"，并去重
+    innovations = df_relationships[df_relationships["source_type"] == "Innovation"]
+    unique_innovations = innovations.drop_duplicates(subset=["source_id"]).reset_index(drop=True)
+    print(f"Found {len(unique_innovations)} unique innovations.")
+    if unique_innovations.empty:
+        return {}
 
     # Step 2: Construct a detailed textual context for each innovation
     # This includes: name, description, developers, and relationship-based context
+    # Step 2: 为每个 Innovation 构建一个文本上下文（包含名称、描述、开发组织、其他关系说明）
     global innovation_features
     innovation_features.clear()
 
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
-        innovation_id = row['source_id']
-        if innovation_id not in innovation_features:
-            source_name = str(row.get('source_english_id', ''))
-            source_description = str(row.get('source_description', ''))
-            context = f"Innovation name: {source_name}. Description: {source_description}."
+        innovation_id = row["source_id"]
+        if innovation_id in innovation_features:
+            continue
 
-            # Append developers (organizations linked by DEVELOPED_BY relationship)
-            developed_by = df_relationships[
-                (df_relationships['source_id'] == innovation_id) &
-                (df_relationships['relationship_type'] == 'DEVELOPED_BY')
-            ]['target_english_id'].dropna().unique().tolist()
+        source_name = str(row.get("source_english_id", "")).strip()
+        source_desc = str(row.get("source_description", "")).strip()
+        context = f"Innovation name: {source_name}. Description: {source_desc}."
 
-            if developed_by:
-                context += f" Developed by: {', '.join(developed_by)}."
+        # 如果有 DEVELOPED_BY 关系，则拼接开发组织
+        dev_by = (
+            df_relationships[
+                (df_relationships["source_id"] == innovation_id) &
+                (df_relationships["relationship_type"] == "DEVELOPED_BY")
+            ]["target_english_id"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        if dev_by:
+            context += " Developed by: " + ", ".join(dev_by) + "."
 
-            # Add additional relationships and their target descriptions
-            related_rows = df_relationships[df_relationships['source_id'] == innovation_id]
-            for _, rel_row in related_rows.iterrows():
-                rel_desc = str(rel_row.get('relationship description', '')).strip()
-                target_name = str(rel_row.get('target_english_id', '')).strip()
-                target_desc = str(rel_row.get('target_description', '')).strip()
-                if rel_desc and target_name and target_desc:
-                    context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
+        # 将其他关系（relationship description + target 英文名 + target 描述）拼接进 context
+        related_rows = df_relationships[df_relationships["source_id"] == innovation_id]
+        for _, rel_row in related_rows.iterrows():
+            rel_desc = str(rel_row.get("relationship description", "")).strip()
+            target_name = str(rel_row.get("target_english_id", "")).strip()
+            target_desc = str(rel_row.get("target_description", "")).strip()
+            if rel_desc and target_name and target_desc:
+                context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
 
-            innovation_features[innovation_id] = context
+        innovation_features[innovation_id] = context
 
-    # Step 3: Generate embeddings or use text features directly
+    # Step 3: 生成或加载这些上下文的 embeddings
     print("Generating features for similarity comparison...")
-    
-    # 初始化缓存系统
+    # 假设 CacheFactory.create_cache 可以根据 config 创建出缓存实例，支持 load()/get_missing_keys()/update() 等接口
     cache = CacheFactory.create_cache(
         cache_type=config["type"],
         backend_type=config["backend"],
         cache_path=config["path"],
         use_cache=config["use_cache"]
     )
-    
-    # 加载缓存
-    embeddings = cache.load()
-    
-    # 找出未缓存的ID
-    missing_ids = cache.get_missing_keys(list(innovation_features.keys()))
-    
-    # 生成新的embeddings
+
+    # 从缓存里 load 出已经存在的 embedding
+    embeddings: Dict[str, np.ndarray] = cache.load()  # { innovation_id: np.array(...) }
+    all_ids = list(innovation_features.keys())
+    missing_ids = cache.get_missing_keys(all_ids)
+
     if missing_ids:
         print(f"Generating {len(missing_ids)} new embeddings...")
-        new_embeddings = {}
-        
-        for id in tqdm(missing_ids, desc="Generating embeddings"):
-            text = innovation_features[id]
-            new_embeddings[id] = get_embedding(text, model)
-        
-        # 更新缓存
-        cache.update(new_embeddings)
-        embeddings.update(new_embeddings)
+        new_embd: Dict[str, np.ndarray] = {}
+        for iid in tqdm(missing_ids, desc="Embedding innovations"):
+            txt = innovation_features[iid]
+            new_embd[iid] = get_embedding(txt, model)
+        cache.update(new_embd)
+        embeddings.update(new_embd)
 
-    # Step 4: Compute cosine similarity between all embedding vectors
-    # Group similar innovations into clusters based on similarity threshold
-    print("Clustering similar innovations...")
-    threshold = 0.85
-    embedding_items = list(embeddings.items())
+    # 确保 embeddings 的顺序和 unique_innovations 一致
+    embedding_items = [(iid, embeddings[iid]) for iid in all_ids]
     innovation_ids = [item[0] for item in embedding_items]
-    embedding_matrix = np.array([item[1] for item in embedding_items])
-    similarity_matrix = cosine_similarity(embedding_matrix)
+    embedding_matrix = np.vstack([item[1] for item in embedding_items])  # shape = (N, D)
 
-    clusters = {}
-    processed = set()
+    # Step 4: 根据用户指定的 method，调用对应的聚类算法
+    print(f"Clustering similar innovations with method='{method}'...")
+    canonical_mapping: Dict[str, str] = {}
 
-    for i, id1 in enumerate(tqdm(innovation_ids, desc="Clustering innovations")):
-        if id1 in processed:
-            continue
+    method_lower = method.lower()
+    if method_lower in {"hdbscan", "kmeans", "agglomerative", "spectral"}:
+        # -------- 1) 平面簇算法 --------
+        if method_lower == "hdbscan":
+            min_cluster_size = method_kwargs.get("min_cluster_size", 2)
+            metric = method_kwargs.get("metric", "cosine")
+            cluster_selection_method = method_kwargs.get("cluster_selection_method", "eom")
+            labels = cluster_hdbscan(
+                embedding_matrix=embedding_matrix,
+                min_cluster_size=min_cluster_size,
+                metric=metric,
+                cluster_selection_method=cluster_selection_method
+            )
+        elif method_lower == "kmeans":
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            random_state = method_kwargs.get("random_state", 42)
+            labels = cluster_kmeans(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                random_state=random_state
+            )
+        elif method_lower == "agglomerative":
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            affinity = method_kwargs.get("affinity", "cosine")
+            linkage = method_kwargs.get("linkage", "average")
+            labels = cluster_agglomerative(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                affinity=affinity,
+                linkage=linkage
+            )
+        else:  # spectral
+            n_clusters = method_kwargs.get("n_clusters", 450)
+            affinity = method_kwargs.get("affinity", "nearest_neighbors")
+            n_neighbors = method_kwargs.get("n_neighbors", 10)
+            labels = cluster_spectral(
+                embedding_matrix=embedding_matrix,
+                n_clusters=n_clusters,
+                affinity=affinity,
+                n_neighbors=n_neighbors
+            )
 
-        cluster = [id1]
-        for j, id2 in enumerate(innovation_ids):
-            if id1 != id2 and id2 not in processed:
-                similarity = similarity_matrix[i, j]
-                if similarity > threshold:
-                    cluster.append(id2)
-                    processed.add(id2)
+        # 把 label -> cluster 成员映射出来
+        clusters: Dict[int, List[str]] = {}
+        for idx, lab in enumerate(labels):
+            if lab == -1:
+                # HDBSCAN 的 -1 (噪声) 单独成一簇
+                key = f"noise_{innovation_ids[idx]}"
+                clusters.setdefault(key, []).append(innovation_ids[idx])
+            else:
+                clusters.setdefault(int(lab), []).append(innovation_ids[idx])
 
-        canonical_id = id1  # use the first item as the canonical (representative) ID
-        clusters[canonical_id] = cluster
-        processed.add(id1)
+        # 把每个簇里的第一个成员设为 canonical_id
+        for lab_key, members in clusters.items():
+            canonical_id = members[0]
+            for mid in members:
+                canonical_mapping[mid] = canonical_id
 
-    # Step 5: Build a mapping from each innovation ID to its canonical representative
-    canonical_mapping = {}
-    for canonical_id, cluster_ids in clusters.items():
-        for innovation_id in cluster_ids:
-            canonical_mapping[innovation_id] = canonical_id
+    elif method_lower in {"graph_threshold", "graph_kcore"}:
+        # -------- 2) 图聚类算法 --------
+        sim_threshold = method_kwargs.get("similarity_threshold", 0.85)
+        use_cos = method_kwargs.get("use_cosine", True)
 
-    print(f"Found {len(clusters)} unique innovation clusters")
-    print(f"Reduced from {len(innovation_features)} to {len(clusters)} innovations")
+        if method_lower == "graph_threshold":
+            clusters_dict = graph_threshold_clustering(
+                embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
+                similarity_threshold=sim_threshold,
+                use_cosine=use_cos
+            )
+        else:  # "graph_kcore"
+            k_core = method_kwargs.get("k_core", 15)
+            clusters_dict = graph_kcore_clustering(
+                embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
+                similarity_threshold=sim_threshold,
+                k_core=k_core,
+                use_cosine=use_cos
+            )
 
+        # clusters_dict 已经是 { canonical_id: [member_id,...], ... }
+        for canonical_id, members in clusters_dict.items():
+            for mid in members:
+                canonical_mapping[mid] = canonical_id
+
+    else:
+        raise ValueError(
+            f"Unknown clustering method '{method}'.\n"
+            "请选择：['hdbscan','kmeans','agglomerative','spectral','graph_threshold','graph_kcore']。"
+        )
+
+    print(f"Found {len(set(canonical_mapping.values()))} unique innovation clusters "
+          f"(reduced from {len(unique_innovations)}).")
+          
+    # Step 5: (deleted)
+    
     # Step 6: Upload canonical embeddings to Azure AI Search
     if vector_store is not None:
         print("Uploading embeddings to Azure AI Search...")
@@ -776,9 +1070,9 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, ve
                     print(f"Error uploading embedding: {e}")
 
         print("Uploaded embeddings to Azure AI Search...")
-
-
+        
     return canonical_mapping
+
 
 
 def create_innovation_knowledge_graph(df_relationships: pd.DataFrame, canonical_mapping: Dict[str, str]) -> Dict:
@@ -965,264 +1259,6 @@ def analyze_innovation_network(consolidated_graph: Dict) -> Dict:
     }
 
 
-def visualize_network(analysis_results: Dict, output_dir: str = RESULTS_DIR):
-    """
-    Visualize the innovation network.
-    
-    Args:
-        analysis_results: Results from network analysis
-        output_dir: Directory to save visualizations
-    """
-    print("Visualizing network...")
-    
-    G = analysis_results['graph']
-    
-    # 确保所有节点都有type属性
-    for node in G.nodes:
-        if 'type' not in G.nodes[node]:
-            # 检查是否有其他可以用来推断类型的属性
-            if 'names' in G.nodes[node]:
-                G.nodes[node]['type'] = 'Innovation'
-            elif 'name' in G.nodes[node]:
-                G.nodes[node]['type'] = 'Organization'
-            else:
-                # 如果无法确定，设置为默认类型
-                G.nodes[node]['type'] = 'Unknown'
-    
-    # 颜色映射，增加未知类型的颜色
-    color_map = {'Innovation': 'lightblue', 'Organization': 'lightgreen', 'Unknown': 'lightgray'}
-    node_colors = [color_map[G.nodes[n].get('type', 'Unknown')] for n in G.nodes]
-    
-    # 节点大小
-    innovation_sizes = [
-        G.nodes[n].get('sources', 1) * 50 if G.nodes[n].get('type') == 'Innovation' 
-        else 100 for n in G.nodes
-    ]
-    
-    # 创建图形
-    plt.figure(figsize=(14, 10))
-    
-    # 绘制网络
-    pos = nx.spring_layout(G, k=0.15, iterations=50)
-    
-    # 绘制节点
-    nx.draw_networkx_nodes(G, pos, 
-                          node_color=node_colors,
-                          node_size=innovation_sizes,
-                          alpha=0.8)
-    
-    # 绘制边，不同类型的边用不同颜色
-    edge_colors = ['red' if G.edges[e].get('type') == 'DEVELOPED_BY' else 'blue' for e in G.edges]
-    nx.draw_networkx_edges(G, pos, 
-                          edge_color=edge_colors,
-                          width=1.0,
-                          alpha=0.5)
-    
-    # 仅为关键节点绘制标签
-    key_nodes = [node for node, _ in analysis_results['key_orgs'] + analysis_results['key_innovations']]
-    labels = {node: G.nodes[node].get('name', G.nodes[node].get('names', node)) 
-              for node in G.nodes if node in key_nodes}
-    nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
-    
-    # 添加图例
-    innovation_patch = plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='lightblue', markersize=10, label='Innovation')
-    org_patch = plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='lightgreen', markersize=10, label='Organization')
-    unknown_patch = plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='lightgray', markersize=10, label='Unknown')
-    developed_by = plt.Line2D([0], [0], color='red', lw=2, label='Developed By')
-    collaboration = plt.Line2D([0], [0], color='blue', lw=2, label='Collaboration')
-    
-    plt.legend(handles=[innovation_patch, org_patch, unknown_patch, developed_by, collaboration], loc='best')
-    
-    plt.title('VTT Innovation Network')
-    plt.axis('off')
-    
-    # 保存图形
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'innovation_network.png'), dpi=300)
-    plt.close()
-    
-    # Create 3D visualization with Plotly
-    visualize_network_3d(G, analysis_results, output_dir)
-    
-    # 创建汇总统计可视化
-    plt.figure(figsize=(10, 6))
-    stats = analysis_results['stats']
-    
-    # 关键统计数据条形图
-    sns.barplot(x=['Total Innovations', 'Multi-Source Innovations', 'Multi-Developer Innovations'],
-               y=[stats['total'], stats['multi_source_count'], stats['multi_developer_count']])
-    
-    plt.title('Innovation Statistics')
-    plt.ylabel('Count')
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'innovation_stats.png'), dpi=300)
-    plt.close()
-    
-    # 可视化按创新计数排名前列的组织
-    plt.figure(figsize=(12, 8))
-    top_orgs = analysis_results['top_orgs']
-    
-    if top_orgs:
-        # 确保只使用存在于图中的组织
-        filtered_top_orgs = [(org_id, count) for org_id, count in top_orgs if org_id in G.nodes]
-        
-        if filtered_top_orgs:
-            org_names = [G.nodes[org_id].get('name', org_id) for org_id, _ in filtered_top_orgs]
-            org_counts = [count for _, count in filtered_top_orgs]
-            
-            # 创建水平条形图
-            sns.barplot(y=org_names, x=org_counts, palette='viridis')
-            
-            plt.title('Top Organizations by Innovation Count')
-            plt.xlabel('Number of Innovations')
-            plt.ylabel('Organization')
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, 'top_organizations.png'), dpi=300)
-            plt.close()
-    
-    print(f"Visualizations saved to {output_dir}")
-
-
-def visualize_network_3d(G: nx.Graph, analysis_results: Dict, output_dir: str = RESULTS_DIR):
-    """
-    Create a 3D visualization of the innovation network using Plotly.
-    
-    Args:
-        G: NetworkX graph of the innovation network
-        analysis_results: Results from network analysis
-        output_dir: Directory to save visualizations
-    """
-    print("Creating 3D network visualization...")
-    
-    # Use a force-directed layout algorithm in 3D
-    pos_3d = nx.spring_layout(G, dim=3, k=0.15, iterations=50)
-    
-    # Extract node positions
-    x_nodes = [pos_3d[node][0] for node in G.nodes]
-    y_nodes = [pos_3d[node][1] for node in G.nodes]
-    z_nodes = [pos_3d[node][2] for node in G.nodes]
-    
-    # Node types for coloring
-    node_types = [G.nodes[node].get('type', 'Unknown') for node in G.nodes]
-    
-    # Node sizes
-    node_sizes = []
-    for node in G.nodes:
-        if G.nodes[node].get('type') == 'Innovation':
-            # Larger nodes for innovations with more sources
-            size = G.nodes[node].get('sources', 1) * 10
-        else:
-            # Default size for organizations
-            size = 10
-        node_sizes.append(size)
-    
-    # Node labels
-    key_nodes = [node for node, _ in analysis_results['key_orgs'] + analysis_results['key_innovations']]
-    node_labels = []
-    for node in G.nodes:
-        if node in key_nodes:
-            if G.nodes[node].get('type') == 'Innovation':
-                label = G.nodes[node].get('names', node)
-            else:
-                label = G.nodes[node].get('name', node)
-        else:
-            label = ""
-        node_labels.append(label)
-    
-    # Create a color scale for node types
-    color_map = {'Innovation': 'rgb(100, 149, 237)', 'Organization': 'rgb(144, 238, 144)', 'Unknown': 'rgb(211, 211, 211)'}
-    node_colors = [color_map[G.nodes[n].get('type', 'Unknown')] for n in G.nodes]
-    
-    # Create nodes trace
-    nodes_trace = go.Scatter3d(
-        x=x_nodes,
-        y=y_nodes,
-        z=z_nodes,
-        mode='markers+text',
-        text=node_labels,
-        textposition='top center',
-        marker=dict(
-            size=node_sizes,
-            color=node_colors,
-            opacity=0.8,
-            line=dict(width=0.5, color='rgb(50, 50, 50)')
-        ),
-        hoverinfo='text',
-        hovertext=[f"{G.nodes[node].get('name', G.nodes[node].get('names', node))}<br>Type: {G.nodes[node].get('type', 'Unknown')}" 
-                  for node in G.nodes]
-    )
-    
-    # Create edges traces
-    edge_traces = []
-    
-    # Group edges by type
-    edge_types = {'DEVELOPED_BY': 'red', 'COLLABORATION': 'blue', 'OTHER': 'gray'}
-    
-    for edge_type, color in edge_types.items():
-        x_edges = []
-        y_edges = []
-        z_edges = []
-        
-        for edge in G.edges:
-            # Filter edges by type
-            edge_data = G.edges[edge]
-            current_edge_type = edge_data.get('type', 'OTHER')
-            
-            if edge_type == 'OTHER' and current_edge_type not in edge_types:
-                # This is for edges that don't have a specific type defined in edge_types
-                source, target = edge
-                x_edges.extend([pos_3d[source][0], pos_3d[target][0], None])
-                y_edges.extend([pos_3d[source][1], pos_3d[target][1], None])
-                z_edges.extend([pos_3d[source][2], pos_3d[target][2], None])
-            elif current_edge_type == edge_type:
-                source, target = edge
-                x_edges.extend([pos_3d[source][0], pos_3d[target][0], None])
-                y_edges.extend([pos_3d[source][1], pos_3d[target][1], None])
-                z_edges.extend([pos_3d[source][2], pos_3d[target][2], None])
-        
-        if x_edges:  # Only add a trace if there are edges of this type
-            edge_trace = go.Scatter3d(
-                x=x_edges,
-                y=y_edges,
-                z=z_edges,
-                mode='lines',
-                line=dict(color=color, width=1),
-                hoverinfo='none',
-                name=edge_type
-            )
-            edge_traces.append(edge_trace)
-    
-    # Create figure
-    fig = go.Figure(data=[nodes_trace] + edge_traces)
-    
-    # Update layout
-    fig.update_layout(
-        title='VTT Innovation Network - 3D Visualization',
-        scene=dict(
-            xaxis=dict(showticklabels=False, title=''),
-            yaxis=dict(showticklabels=False, title=''),
-            zaxis=dict(showticklabels=False, title=''),
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
-        ),
-        margin=dict(l=0, r=0, b=0, t=40),
-        legend=dict(
-            title_text='Relationship Types',
-            x=0,
-            y=1,
-            bgcolor='rgba(255, 255, 255, 0.5)'
-        ),
-        showlegend=True
-    )
-    
-    # Save interactive HTML file
-    fig.write_html(os.path.join(output_dir, 'innovation_network_3d.html'))
-    
-    # Save static image as well
-    fig.write_image(os.path.join(output_dir, 'innovation_network_3d.png'), width=1200, height=900)
-    
-    print(f"3D visualization saved to {output_dir}")
-
-
 def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_mapping: Dict, output_dir: str = RESULTS_DIR):
     """
     Export analysis results and consolidated data to files.
@@ -1352,6 +1388,11 @@ def main():
                        help="Path to cache file (for file-based backends)")
     parser.add_argument("--no-cache", action="store_true", 
                        help="Disable caching")
+
+    parser.add_argument("--skip-eval", action="store_true",
+                       help="Skip evaluation step")
+    parser.add_argument("--auto-label", action="store_true",
+                       help="Automatically label consistency samples and generate gold standard files")
     
     args = parser.parse_args()
     
@@ -1366,10 +1407,11 @@ def main():
     print("Starting VTT Innovation Resolution process...")
     print(f"Cache configuration: {cache_config}")
     
-    # Step 1: Load and combine data
-    df_relationships = load_and_combine_data()
+    # Step 1: Load and combine data (modified to also collect predictions)
+    df_relationships, all_pred_entities, all_pred_relations = load_and_combine_data()
     
     # Step 2: Initialize OpenAI client
+
     llm, embed_model, vector_store = initialize_openai_client()
 
     
@@ -1394,6 +1436,17 @@ def main():
     answer = chat_bot("nuclear")
     print(answer)
     
+    # Step 3: Resolve innovation duplicates
+    canonical_mapping = resolve_innovation_duplicates(
+        df_relationships=df_relationships,
+        model=embed_model,
+        cache_config=cache_config,
+        method="hdbscan",  # 默认使用hdbscan
+        min_cluster_size=2,  # 可配置参数
+        metric="cosine",
+        cluster_selection_method="eom"
+    )
+        
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
     
@@ -1401,11 +1454,116 @@ def main():
     analysis_results = analyze_innovation_network(consolidated_graph)
     
     # Step 6: Visualize network
-    visualize_network(analysis_results)
-    visualize_network_3d(analysis_results['graph'], analysis_results)
+
+    visualize_network_tufte(analysis_results)
+    
+    # Save predicted entities and relationships for evaluation
+    os.makedirs("evaluation", exist_ok=True)
+    
+    # Remove duplicates from predicted entities and relations
+    unique_pred_entities = []
+    seen_entities = set()
+    for entity in all_pred_entities:
+        entity_key = (entity["name"].lower(), entity["type"])
+        if entity_key not in seen_entities:
+            seen_entities.add(entity_key)
+            unique_pred_entities.append(entity)
+    
+    unique_pred_relations = []
+    seen_relations = set()
+    for relation in all_pred_relations:
+        relation_key = (relation["innovation"].lower(), relation["organization"].lower(), relation["relation"])
+        if relation_key not in seen_relations:
+            seen_relations.add(relation_key)
+            unique_pred_relations.append(relation)
+    
+    # Save to JSON files
+    pred_entities_path = os.path.join("evaluation", "pred_entities.json")
+    pred_relations_path = os.path.join("evaluation", "pred_relations.json")
+    
+    with open(pred_entities_path, "w", encoding="utf-8") as f:
+        json.dump(unique_pred_entities, f, ensure_ascii=False, indent=2)
+    
+    with open(pred_relations_path, "w", encoding="utf-8") as f:
+        json.dump(unique_pred_relations, f, ensure_ascii=False, indent=2)
+    
+    print(f"Saved {len(unique_pred_entities)} unique predicted entities to {pred_entities_path}")
+    print(f"Saved {len(unique_pred_relations)} unique predicted relations to {pred_relations_path}")
     
     # Step 7: Export results
     export_results(analysis_results, consolidated_graph, canonical_mapping)
+    
+    # Step 8: Run evaluation if not skipped
+    if not args.skip_eval:
+        # Convert consolidated_graph to Node and Relationship objects for evaluation
+        from evaluation import run_all_evaluations
+        
+        # Create Node objects for merged innovations
+        merged_innovations = []
+        for inno_id, inno_data in consolidated_graph['innovations'].items():
+            node = Node(
+                id=inno_id,
+                type="Innovation",
+                properties={
+                    "aliases": "|".join(list(inno_data['names'])) if inno_data['names'] else "",
+                    "source_docs": "|".join(list(inno_data['descriptions'])) if inno_data['descriptions'] else "",
+                    "developed_by": "|".join(list(inno_data['developed_by'])) if inno_data['developed_by'] else "",
+                    "sources": "|".join(list(inno_data['sources'])) if inno_data['sources'] else ""
+                }
+            )
+            merged_innovations.append(node)
+        
+        # Create all nodes
+        all_nodes = []
+        
+        # Add innovations
+        for inno_id, inno_data in consolidated_graph['innovations'].items():
+            node = Node(
+                id=inno_id,
+                type="Innovation",
+                properties={
+                    "name": list(inno_data['names'])[0] if inno_data['names'] else inno_id,
+                    "description": list(inno_data['descriptions'])[0] if inno_data['descriptions'] else ""
+                }
+            )
+            all_nodes.append(node)
+        
+        # Add organizations
+        for org_id, org_data in consolidated_graph['organizations'].items():
+            node = Node(
+                id=org_id,
+                type="Organization",
+                properties={
+                    "name": str(org_data['name']) if org_data['name'] is not None else "",
+                    "description": str(org_data['description']) if org_data['description'] is not None else ""
+                }
+            )
+            all_nodes.append(node)
+        
+        # Create relationships
+        all_rels = []
+        for rel_data in consolidated_graph['relationships']:
+            rel = Relationship(
+                source=rel_data['source'],
+                source_type="Innovation" if rel_data['source'] in consolidated_graph['innovations'] else "Organization",
+                target=rel_data['target'],
+                target_type="Organization" if rel_data['target'] in consolidated_graph['organizations'] else "Innovation",
+                type=rel_data['type'],
+                properties={}
+            )
+            all_rels.append(rel)
+        
+        # Run evaluation
+        evaluation_results = run_all_evaluations(
+            merged_innovations=merged_innovations,
+            all_nodes=all_nodes,
+            all_rels=all_rels,
+            data_dir=DATA_DIR,
+            results_dir=RESULTS_DIR,
+            eval_dir="evaluation",
+            auto_label=args.auto_label,
+            llm=llm  # 传递语言模型以便自动标注
+        )
     
     print("Innovation Resolution process completed successfully!")
     print(f"Results and visualizations saved to {RESULTS_DIR}")
