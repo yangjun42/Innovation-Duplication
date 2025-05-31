@@ -37,13 +37,15 @@ def visualize_network_tufte_2D(analysis_results: dict):
     G: nx.Graph = analysis_results['graph']
 
     # 仅画degree Top-N及其一阶邻居
-    MAX_NODES = 64
-    deg_top = sorted(G.degree, key=lambda x: x[1], reverse=True)[:MAX_NODES]
-    nodes_keep = set(n for n, _ in deg_top)
-    for n, _ in deg_top:
-        nodes_keep |= set(G.neighbors(n))
+    TOPK_INNOVATIONS = 32
+    innovation_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'Innovation']
+    top_innos = sorted(innovation_nodes, key=lambda n: G.degree(n), reverse=True)[:TOPK_INNOVATIONS]
+    nodes_keep = set(top_innos)
+    for n in top_innos:
+        for _, tgt, data in G.edges(n, data=True):
+            if data.get('type') in ['DEVELOPED_BY', 'COLLABORATION']:
+                nodes_keep.add(tgt)
     H = G.subgraph(nodes_keep).copy()
-
     plt.figure(figsize=(16, 11), facecolor='white')
     ax = plt.gca()
     ax.set_facecolor('white')
@@ -110,7 +112,7 @@ def visualize_network_tufte_3D(analysis_results: dict):
     G: nx.Graph = analysis_results['graph']
 
     # 只画最多50个节点的子图
-    SUB_N = 128
+    SUB_N = 32
     deg_top = sorted(G.degree, key=lambda x: x[1], reverse=True)[:SUB_N]
     nodes_keep = set(n for n, _ in deg_top)
     for n, _ in deg_top:
@@ -155,7 +157,7 @@ def visualize_network_tufte_3D(analysis_results: dict):
                 mode='lines', line=dict(color=color, width=1),
                 hoverinfo='none', name=etype
             )
-            edge_trace.update(render_mode='webgl')
+            # edge_trace.update(render_mode='webgl')
             edge_traces.append(edge_trace)
 
     hover_texts = [
@@ -169,7 +171,7 @@ def visualize_network_tufte_3D(analysis_results: dict):
         hovertext=hover_texts,
         marker=dict(size=node_sizes, color=node_colors, opacity=0.9,
                     line=dict(width=0.2, color='black')),
-        render_mode='webgl',
+        # render_mode='webgl',
         name="Nodes"
     )
 
@@ -181,7 +183,8 @@ def visualize_network_tufte_3D(analysis_results: dict):
             yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor='white'),
             zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor='white')
         ),
-        margin=dict(l=0, r=0, b=0, t=40),
+        margin=dict(l=0, r=0, b=0, t=30),
+        scene_camera=dict(projection=dict(type='orthographic')),  # 关闭 perspective
         legend=dict(title_text='Relation Types', x=0, y=1, bgcolor='rgba(255,255,255,0.5)')
     )
     fig.write_html(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.html'))
@@ -194,7 +197,7 @@ def visualize_network_tufte_bar(analysis_results: dict):
     G = analysis_results['graph']
 
     # (1) Innovation Statistics Barplot
-    plt.figure(figsize=(7, 4), facecolor='white')
+    plt.figure(figsize=(6, 6), facecolor='white')
     labels = ['Total Innovations', 'Multi-Source Innovations', 'Multi-Developer Innovations']
     values = [stats['total'], stats['multi_source_count'], stats['multi_developer_count']]
     colors = ['#4c72b0', '#55a868', '#c44e52']
@@ -224,19 +227,19 @@ def visualize_network_tufte_bar(analysis_results: dict):
                 if not name:
                     name = str(oid)
                 # 截断长名称
-                maxlen = 32
+                maxlen = 25
                 if len(name) > maxlen:
                     name = name[:maxlen - 2] + "…"
                 org_names.append(name)
                 org_counts.append(cnt)
             # 梯度色
-            palette = sns.light_palette('#6b56b5', n_colors=len(org_counts), reverse=True)
+            palette = sns.light_palette('#6b56b5', n_colors=len(org_counts), reverse=False) # 长的在上
             plt.figure(figsize=(8, len(org_names) * 0.4 + 1), facecolor='white')
             bars = sns.barplot(y=org_names, x=org_counts, palette=palette, edgecolor='none')
             plt.xscale('log') if max(org_counts) > 50 else None
             for p, count in zip(bars.patches, org_counts):
-                plt.text(p.get_width() + max(org_counts) * 0.01, p.get_y() + p.get_height() / 2,
-                         f"{int(count)}", va='center', fontsize=9)
+                plt.text(p.get_width() + max(org_counts) * 0.03, p.get_y() + p.get_height() / 2,
+                         f"{int(count)}", va='center', fontsize=10)
             plt.title('Top Organizations by Innovation Count', fontsize=14, weight='bold')
             plt.xlabel('Number of Innovations', fontsize=12)
             plt.ylabel('')
