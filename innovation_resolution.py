@@ -569,7 +569,7 @@ def get_embedding(text: str, model) -> np.ndarray:
         # Return random embedding as last resort
         return np.random.rand(1536)
 
-
+# TODO: Try the paper's method
 def compute_similarity(emb1, emb2) -> float:
     """
     Compute cosine similarity between two embeddings.
