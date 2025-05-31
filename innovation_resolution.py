@@ -484,7 +484,7 @@ def initialize_openai_client():
         config = json.load(f)
     
     # Dimensions for embedding
-    dim = 1536
+    dim = 3072
     
     # Initialize LLM with gpt-4.1-mini
     model_name = 'gpt-4.1-mini'
@@ -588,19 +588,19 @@ def compute_similarity(emb1, emb2) -> float:
 def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, 
                               cache_config: Dict = None) -> Dict[str, str]:
     """
-    Identify duplicate innovations using text similarity.
-    
+    Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
+
     Args:
-        df_relationships: DataFrame with innovation relationships
-        model: OpenAI model for generating embeddings (not used if API not available)
+        df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes and their connections.
+        model (callable, optional): Embedding model function that converts text to vector. Required if embeddings need to be generated.
         cache_config: 缓存配置，包含以下选项:
             - type: 缓存类型 ('embedding')
             - backend: 后端类型 ('json' 或 'memory')
             - path: 缓存文件路径
             - use_cache: 是否启用缓存
-    
+
     Returns:
-        Dict[str, str]: Mapping from innovation IDs to canonical IDs
+        Dict[str, str]: A dictionary mapping each innovation ID to its canonical ID (representative of a cluster).
     """
     print("Resolving innovation duplicates...")
     
@@ -617,33 +617,42 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
         cache_config = {}
     
     config = {**default_cache_config, **cache_config}
-    
-    # Step 1: Extract innovations
+
+    # Step 1: Extract all unique Innovation nodes from the relationship table
     innovations = df_relationships[df_relationships['source_type'] == 'Innovation']
     unique_innovations = innovations.drop_duplicates(subset=['source_id'])
     print(f"Found {len(unique_innovations)} unique innovations")
-    
-    # Step 2: Create feature vectors for innovations
+
+    # Step 2: Construct a detailed textual context for each innovation
+    # This includes: name, description, developers, and relationship-based context
     innovation_features = {}
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row['source_id']
         if innovation_id not in innovation_features:
-            # Combine name and description
-            name = str(row['source_english_id'])
-            description = str(row['source_description'])
-            context = f"{name}: {description}"
-            
-            # Add organizations that developed this innovation
+            source_name = str(row.get('source_english_id', ''))
+            source_description = str(row.get('source_description', ''))
+            context = f"Innovation name: {source_name}. Description: {source_description}."
+
+            # Append developers (organizations linked by DEVELOPED_BY relationship)
             developed_by = df_relationships[
-                (df_relationships['source_id'] == innovation_id) & 
+                (df_relationships['source_id'] == innovation_id) &
                 (df_relationships['relationship_type'] == 'DEVELOPED_BY')
-            ]['target_english_id'].tolist()
-            
+            ]['target_english_id'].dropna().unique().tolist()
+
             if developed_by:
-                context += f" Developed by: {', '.join(str(org) for org in developed_by)}"
-            
+                context += f" Developed by: {', '.join(developed_by)}."
+
+            # Add additional relationships and their target descriptions
+            related_rows = df_relationships[df_relationships['source_id'] == innovation_id]
+            for _, rel_row in related_rows.iterrows():
+                rel_desc = str(rel_row.get('relationship description', '')).strip()
+                target_name = str(rel_row.get('target_english_id', '')).strip()
+                target_desc = str(rel_row.get('target_description', '')).strip()
+                if rel_desc and target_name and target_desc:
+                    context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
+
             innovation_features[innovation_id] = context
-    
+
     # Step 3: Generate embeddings or use text features directly
     print("Generating features for similarity comparison...")
     
@@ -667,54 +676,50 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
         new_embeddings = {}
         
         for id in tqdm(missing_ids, desc="Generating embeddings"):
-            features = innovation_features[id]
-            new_embeddings[id] = get_embedding(features, model)
+            text = innovation_features[id]
+            new_embeddings[id] = get_embedding(text, model)
         
         # 更新缓存
         cache.update(new_embeddings)
         embeddings.update(new_embeddings)
-    
-    # Step 4: Cluster innovations using similarity threshold
+
+    # Step 4: Compute cosine similarity between all embedding vectors
+    # Group similar innovations into clusters based on similarity threshold
     print("Clustering similar innovations...")
-    clusters = {}
-    threshold = 0.85  # Tunable parameter
-    processed = set()
-    
-    # Compute full similarity matrix for all innovations
+    threshold = 0.85
     embedding_items = list(embeddings.items())
     innovation_ids = [item[0] for item in embedding_items]
     embedding_matrix = np.array([item[1] for item in embedding_items])
-    
-    # 计算相似度矩阵 (批量计算更高效)
     similarity_matrix = cosine_similarity(embedding_matrix)
-    
-    # 使用相似度矩阵进行聚类
+
+    clusters = {}
+    processed = set()
+
     for i, id1 in enumerate(tqdm(innovation_ids, desc="Clustering innovations")):
         if id1 in processed:
             continue
-            
+
         cluster = [id1]
-        # 查找与当前创新相似的所有创新
         for j, id2 in enumerate(innovation_ids):
             if id1 != id2 and id2 not in processed:
                 similarity = similarity_matrix[i, j]
                 if similarity > threshold:
                     cluster.append(id2)
                     processed.add(id2)
-        
-        canonical_id = id1  # Use the first ID as canonical
+
+        canonical_id = id1  # use the first item as the canonical (representative) ID
         clusters[canonical_id] = cluster
         processed.add(id1)
-    
-    # Step 5: Create mapping dictionary
+
+    # Step 5: Build a mapping from each innovation ID to its canonical representative
     canonical_mapping = {}
     for canonical_id, cluster_ids in clusters.items():
         for innovation_id in cluster_ids:
             canonical_mapping[innovation_id] = canonical_id
-    
+
     print(f"Found {len(clusters)} unique innovation clusters")
     print(f"Reduced from {len(innovation_features)} to {len(clusters)} innovations")
-    
+
     return canonical_mapping
 
 
