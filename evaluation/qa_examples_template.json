@@ -1,0 +1,29 @@
+{
+  "innovation_developers": {
+    "AI-based energy optimization system": [
+      "VTT Technical Research Centre of Finland"
+    ],
+    "Smart Grid Solution": [
+      "FinnTech Systems"
+    ],
+    "Autonomous Monitoring System": [
+      "Nordic IoT Solutions",
+      "VTT Technical Research Centre of Finland"
+    ]
+  },
+  "organization_innovations": {
+    "VTT Technical Research Centre of Finland": [
+      "AI-based energy optimization system",
+      "Autonomous Monitoring System",
+      "Smart Grid Solution"
+    ],
+    "FinnTech Systems": [
+      "Smart Grid Solution",
+      "Cloud Analytics Platform"
+    ],
+    "Energy Solutions Ltd": [
+      "AI-based energy optimization system",
+      "Renewable Power Management"
+    ]
+  }
+} 
