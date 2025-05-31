@@ -1,0 +1,22 @@
+[
+  {
+    "innovation": "AI-based energy optimization system",
+    "organization": "VTT Technical Research Centre of Finland",
+    "relation": "DEVELOPED_BY"
+  },
+  {
+    "innovation": "AI-based energy optimization system",
+    "organization": "Energy Solutions Ltd",
+    "relation": "COLLABORATION"
+  },
+  {
+    "innovation": "Smart Grid Solution",
+    "organization": "FinnTech Systems",
+    "relation": "DEVELOPED_BY"
+  },
+  {
+    "innovation": "Smart Grid Solution",
+    "organization": "VTT Technical Research Centre of Finland",
+    "relation": "COLLABORATION"
+  }
+] 
