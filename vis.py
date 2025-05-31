@@ -12,6 +12,7 @@ VTT Innovation Resolution Challenge Solution (Tufte-inspired Visualizations)
 
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
 import networkx as nx
 import plotly.graph_objects as go
@@ -27,6 +28,13 @@ COLOR_PALETTE = {
     "Unknown": "#bbbbbb"
 }
 EDGE_STYLE = {"DEVELOPED_BY": "solid", "COLLABORATION": "dashed"}
+
+def get_red_blue_palette(n_colors):
+    # 红 -> 灰 -> 蓝
+    from matplotlib.colors import LinearSegmentedColormap
+    colors = ["#d73027", "#cccccc", "#4575b4"]  # 红-灰-蓝
+    cmap = LinearSegmentedColormap.from_list("redgrayblue", colors, N=n_colors)
+    return [cmap(i/(n_colors-1)) for i in range(n_colors)]
 
 def visualize_network_tufte(analysis_results: dict):
     visualize_network_tufte_2D(analysis_results)
@@ -109,24 +117,37 @@ def visualize_network_tufte_2D(analysis_results: dict):
     print("2D network visualization saved: innovation_network_tufte_2D.png")
 
 def visualize_network_tufte_3D(analysis_results: dict):
+    """
+    Tufte 风格的 3D 交互网络图，可视化最核心节点（如只展示前 50 节点，避免过度拥挤）：
+      - 使用 Plotly 3D Scatter
+      - 仅标记最重要的局部，让评委专注而不过度分散注意力
+    Args:
+        analysis_results: analyze_innovation_network() 返回的字典
+    """
     G: nx.Graph = analysis_results['graph']
 
-    # 只画最多50个节点的子图
-    SUB_N = 32
-    deg_top = sorted(G.degree, key=lambda x: x[1], reverse=True)[:SUB_N]
-    nodes_keep = set(n for n, _ in deg_top)
-    for n, _ in deg_top:
-        nodes_keep |= set(G.neighbors(n))
-    subG = G.subgraph(nodes_keep).copy()
+    # 如果网络节点超多，可先提取前 50 或前若干度数最高节点的子图
+    if len(G.nodes) > 100:
+        # 以 degree 排序，取前 50
+        top_nodes = sorted(G.nodes(), key=lambda n: G.degree(n), reverse=True)[:50]
+        subG = G.subgraph(top_nodes).copy()
+    else:
+        subG = G
 
-    pos_3d = nx.spring_layout(subG, dim=3, k=0.25, iterations=50, seed=42)
+    # 1. 3D 布局（固定 seed）
+    pos_3d = nx.spring_layout(subG, dim=3, k=0.15, iterations=50, seed=42)
+
+    # 2. 提取坐标与属性
     x_nodes = [pos_3d[n][0] for n in subG.nodes()]
     y_nodes = [pos_3d[n][1] for n in subG.nodes()]
     z_nodes = [pos_3d[n][2] for n in subG.nodes()]
 
     node_types = nx.get_node_attributes(subG, 'type')
     sources_counts = nx.get_node_attributes(subG, 'sources')
-    node_colors, node_sizes, node_labels = [], [], []
+
+    node_colors = []
+    node_sizes = []
+    node_labels = []
     for n in subG.nodes():
         ntype = node_types.get(n, 'Unknown')
         if ntype == 'Innovation':
@@ -139,12 +160,24 @@ def visualize_network_tufte_3D(analysis_results: dict):
         else:
             node_sizes.append(5)
             node_colors.append(COLOR_PALETTE['Unknown'])
-        node_labels.append("")  # 静态图不显示
 
-    # 边样式
+        # 仅最重要节点显示标签
+        if n in [nd for nd, _ in analysis_results['key_innovations'][:3]] \
+           or n in [nd for nd, _ in analysis_results['key_orgs'][:3]]:
+            label = (subG.nodes[n].get('name') 
+                     if subG.nodes[n].get('type') == 'Organization' 
+                     else subG.nodes[n].get('names', n))
+        else:
+            label = ""
+        node_labels.append(label)
+
+    # 3. 边 trace（按类型分组）
     edge_traces = []
-    for etype, color in [("DEVELOPED_BY", COLOR_PALETTE["Edge_Developed"]),
-                         ("COLLABORATION", COLOR_PALETTE["Edge_Collaboration"])]:
+    edge_types = {
+        'DEVELOPED_BY': COLOR_PALETTE['Edge_Developed'],
+        'COLLABORATION': COLOR_PALETTE['Edge_Collaboration']
+    }
+    for etype, color in edge_types.items():
         x_edges, y_edges, z_edges = [], [], []
         for u, v, d in subG.edges(data=True):
             if d.get('type') == etype:
@@ -152,43 +185,55 @@ def visualize_network_tufte_3D(analysis_results: dict):
                 y_edges += [pos_3d[u][1], pos_3d[v][1], None]
                 z_edges += [pos_3d[u][2], pos_3d[v][2], None]
         if x_edges:
-            edge_trace = go.Scatter3d(
-                x=x_edges, y=y_edges, z=z_edges,
-                mode='lines', line=dict(color=color, width=1),
-                hoverinfo='none', name=etype
+            edge_traces.append(
+                go.Scatter3d(
+                    x=x_edges, y=y_edges, z=z_edges,
+                    mode='lines',
+                    line=dict(color=color, width=1),
+                    hoverinfo='none',
+                    name=etype
+                )
             )
-            # edge_trace.update(render_mode='webgl')
-            edge_traces.append(edge_trace)
 
+    # 4. 节点 trace
     hover_texts = [
         f"{subG.nodes[n].get('name', subG.nodes[n].get('names', n))}<br>Type: {subG.nodes[n].get('type','Unknown')}"
         for n in subG.nodes()
     ]
     nodes_trace = go.Scatter3d(
         x=x_nodes, y=y_nodes, z=z_nodes,
-        mode='markers',
-        text=[""] * len(subG),
+        mode='markers+text',
+        text=node_labels,
+        textposition='top center',
+        marker=dict(
+            size=node_sizes,
+            color=node_colors,
+            opacity=0.8,
+            line=dict(width=0.2, color='black')
+        ),
+        hoverinfo='text',
         hovertext=hover_texts,
-        marker=dict(size=node_sizes, color=node_colors, opacity=0.9,
-                    line=dict(width=0.2, color='black')),
-        # render_mode='webgl',
         name="Nodes"
     )
 
+    # 5. 组合并渲染
     fig = go.Figure(data=[nodes_trace] + edge_traces)
     fig.update_layout(
         title='VTT Innovation Network (3D Subgraph)',
         scene=dict(
-            xaxis=dict(showgrid=False, showticklabels=False, backgroundcolor='white'),
-            yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor='white'),
-            zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor='white')
+            xaxis=dict(showticklabels=False, title=''),
+            yaxis=dict(showticklabels=False, title=''),
+            zaxis=dict(showticklabels=False, title=''),
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
         ),
-        margin=dict(l=0, r=0, b=0, t=30),
-        scene_camera=dict(projection=dict(type='orthographic')),  # 关闭 perspective
+        margin=dict(l=0, r=0, b=0, t=40),
         legend=dict(title_text='Relation Types', x=0, y=1, bgcolor='rgba(255,255,255,0.5)')
     )
+
+    # 6. 保存交互 HTML 和静态图
     fig.write_html(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.html'))
-    fig.write_image(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.png'), width=1200, height=900)
+    fig.write_image(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.png'),
+                    width=1200, height=900)
     print("3D network visualization saved: innovation_network_tufte_3D.html & .png")
 
 def visualize_network_tufte_bar(analysis_results: dict):
@@ -220,23 +265,28 @@ def visualize_network_tufte_bar(analysis_results: dict):
     if top_orgs:
         filtered = [(oid, cnt) for oid, cnt in top_orgs if oid in G.nodes()]
         if filtered:
-            filtered_sorted = sorted(filtered, key=lambda x: x[1])
-            org_names, org_counts = [], []
+            filtered_sorted = sorted(filtered, key=lambda x: x[1], reverse=True)
+            # 一步生成正确 org_names/org_counts，且名称截断
+            maxlen = 25
+            org_names = []
+            org_counts = []
             for oid, cnt in filtered_sorted:
                 name = G.nodes[oid].get('name')
                 if not name:
                     name = str(oid)
-                # 截断长名称
-                maxlen = 25
                 if len(name) > maxlen:
                     name = name[:maxlen - 2] + "…"
                 org_names.append(name)
                 org_counts.append(cnt)
-            # 梯度色
-            palette = sns.light_palette('#6b56b5', n_colors=len(org_counts), reverse=False) # 长的在上
+            
+            # 红-灰-蓝渐变色
+            n_bar = len(org_counts)
+            palette = get_red_blue_palette(n_bar)
+
             plt.figure(figsize=(8, len(org_names) * 0.4 + 1), facecolor='white')
             bars = sns.barplot(y=org_names, x=org_counts, palette=palette, edgecolor='none')
-            plt.xscale('log') if max(org_counts) > 50 else None
+            if max(org_counts) > 50:
+                plt.xscale('log')
             for p, count in zip(bars.patches, org_counts):
                 plt.text(p.get_width() + max(org_counts) * 0.03, p.get_y() + p.get_height() / 2,
                          f"{int(count)}", va='center', fontsize=10)
