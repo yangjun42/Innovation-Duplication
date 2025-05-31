@@ -45,7 +45,7 @@ def visualize_network_tufte_2D(analysis_results: dict):
     G: nx.Graph = analysis_results['graph']
 
     # 仅画degree Top-N及其一阶邻居
-    TOPK_INNOVATIONS = 32
+    TOPK_INNOVATIONS = 16 # 32
     innovation_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'Innovation']
     top_innos = sorted(innovation_nodes, key=lambda n: G.degree(n), reverse=True)[:TOPK_INNOVATIONS]
     nodes_keep = set(top_innos)
@@ -54,7 +54,7 @@ def visualize_network_tufte_2D(analysis_results: dict):
             if data.get('type') in ['DEVELOPED_BY', 'COLLABORATION']:
                 nodes_keep.add(tgt)
     H = G.subgraph(nodes_keep).copy()
-    plt.figure(figsize=(16, 11), facecolor='white')
+    plt.figure(figsize=(12, 9), facecolor='white')
     ax = plt.gca()
     ax.set_facecolor('white')
     ax.axis('off')
@@ -240,6 +240,7 @@ def visualize_network_tufte_bar(analysis_results: dict):
     stats = analysis_results['stats']
     top_orgs = analysis_results['top_orgs']
     G = analysis_results['graph']
+    print(G.nodes["FI01120389"])
 
     # (1) Innovation Statistics Barplot
     plt.figure(figsize=(6, 6), facecolor='white')
@@ -291,7 +292,7 @@ def visualize_network_tufte_bar(analysis_results: dict):
                 plt.text(p.get_width() + max(org_counts) * 0.03, p.get_y() + p.get_height() / 2,
                          f"{int(count)}", va='center', fontsize=10)
             plt.title('Top Organizations by Innovation Count', fontsize=14, weight='bold')
-            plt.xlabel('Number of Innovations', fontsize=12)
+            plt.xlabel('Number of Innovations (log scale axis)', fontsize=12)
             plt.ylabel('')
             plt.grid(axis='x', linestyle='--', alpha=0.3)
             plt.tight_layout()
