@@ -1,6 +1,9 @@
 data/
 data.tar
 data.tar.bz2
-results/
+keys/
+logs/
+result/
+venvs/
 __pycache__/
 .DS_Store
