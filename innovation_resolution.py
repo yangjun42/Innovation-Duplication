@@ -252,7 +252,8 @@ def get_embedding(text: str, model) -> np.ndarray:
         if len(embedding) < 1536:
             embedding = np.pad(embedding, (0, 1536-len(embedding)), 'constant')
         
-        # 如果维度超过1536，截断
+        # 如果维度超过1536，截断 
+        # TODO
         if len(embedding) > 1536:
             embedding = embedding[:1536]
             
@@ -300,6 +301,7 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) ->
     print(f"Found {len(unique_innovations)} unique innovations")
     
     # Step 2: Create feature vectors for innovations
+    # TODO
     innovation_features = {}
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row['source_id']
