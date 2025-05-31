@@ -11,24 +11,33 @@ and creating a consolidated view of innovation relationships.
 import os
 import pickle
 import json
-import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import numpy as np
+from typing import List, Dict, Tuple, Set, Any, Optional
 import matplotlib.pyplot as plt
-import networkx as nx
 import seaborn as sns
+import networkx as nx
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import Dict, List, Set, Tuple, Any
+import plotly.graph_objects as go
+import plotly.express as px
+from tqdm import tqdm
 
 # Import local modules
-from local_entity_processing import Node, Relationship, Document, GraphDocument
+from innovation_utils import (
+    compute_similarity_matrix,
+    find_potential_duplicates,
+    calculate_innovation_statistics
+)
+
+# Constants
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 
 # Set up paths
-DATA_DIR = 'data'
 GRAPH_DOCS_COMPANY = os.path.join(DATA_DIR, 'graph_docs_names_resolved')
 GRAPH_DOCS_VTT = os.path.join(DATA_DIR, 'graph_docs_vtt_domain_names_resolved')
 DATAFRAMES_DIR = os.path.join(DATA_DIR, 'dataframes')
-RESULTS_DIR = 'results'  # Changed from os.path.join(DATA_DIR, 'results') to save in root directory
 
 # Create results directory if it doesn't exist
 try:
@@ -621,6 +630,9 @@ def visualize_network(analysis_results: Dict, output_dir: str = RESULTS_DIR):
     plt.savefig(os.path.join(output_dir, 'innovation_network.png'), dpi=300)
     plt.close()
     
+    # Create 3D visualization with Plotly
+    visualize_network_3d(G, analysis_results, output_dir)
+    
     # 创建汇总统计可视化
     plt.figure(figsize=(10, 6))
     stats = analysis_results['stats']
@@ -658,6 +670,146 @@ def visualize_network(analysis_results: Dict, output_dir: str = RESULTS_DIR):
             plt.close()
     
     print(f"Visualizations saved to {output_dir}")
+
+
+def visualize_network_3d(G: nx.Graph, analysis_results: Dict, output_dir: str = RESULTS_DIR):
+    """
+    Create a 3D visualization of the innovation network using Plotly.
+    
+    Args:
+        G: NetworkX graph of the innovation network
+        analysis_results: Results from network analysis
+        output_dir: Directory to save visualizations
+    """
+    print("Creating 3D network visualization...")
+    
+    # Use a force-directed layout algorithm in 3D
+    pos_3d = nx.spring_layout(G, dim=3, k=0.15, iterations=50)
+    
+    # Extract node positions
+    x_nodes = [pos_3d[node][0] for node in G.nodes]
+    y_nodes = [pos_3d[node][1] for node in G.nodes]
+    z_nodes = [pos_3d[node][2] for node in G.nodes]
+    
+    # Node types for coloring
+    node_types = [G.nodes[node].get('type', 'Unknown') for node in G.nodes]
+    
+    # Node sizes
+    node_sizes = []
+    for node in G.nodes:
+        if G.nodes[node].get('type') == 'Innovation':
+            # Larger nodes for innovations with more sources
+            size = G.nodes[node].get('sources', 1) * 10
+        else:
+            # Default size for organizations
+            size = 10
+        node_sizes.append(size)
+    
+    # Node labels
+    key_nodes = [node for node, _ in analysis_results['key_orgs'] + analysis_results['key_innovations']]
+    node_labels = []
+    for node in G.nodes:
+        if node in key_nodes:
+            if G.nodes[node].get('type') == 'Innovation':
+                label = G.nodes[node].get('names', node)
+            else:
+                label = G.nodes[node].get('name', node)
+        else:
+            label = ""
+        node_labels.append(label)
+    
+    # Create a color scale for node types
+    color_map = {'Innovation': 'rgb(100, 149, 237)', 'Organization': 'rgb(144, 238, 144)', 'Unknown': 'rgb(211, 211, 211)'}
+    node_colors = [color_map[G.nodes[n].get('type', 'Unknown')] for n in G.nodes]
+    
+    # Create nodes trace
+    nodes_trace = go.Scatter3d(
+        x=x_nodes,
+        y=y_nodes,
+        z=z_nodes,
+        mode='markers+text',
+        text=node_labels,
+        textposition='top center',
+        marker=dict(
+            size=node_sizes,
+            color=node_colors,
+            opacity=0.8,
+            line=dict(width=0.5, color='rgb(50, 50, 50)')
+        ),
+        hoverinfo='text',
+        hovertext=[f"{G.nodes[node].get('name', G.nodes[node].get('names', node))}<br>Type: {G.nodes[node].get('type', 'Unknown')}" 
+                  for node in G.nodes]
+    )
+    
+    # Create edges traces
+    edge_traces = []
+    
+    # Group edges by type
+    edge_types = {'DEVELOPED_BY': 'red', 'COLLABORATION': 'blue', 'OTHER': 'gray'}
+    
+    for edge_type, color in edge_types.items():
+        x_edges = []
+        y_edges = []
+        z_edges = []
+        
+        for edge in G.edges:
+            # Filter edges by type
+            edge_data = G.edges[edge]
+            current_edge_type = edge_data.get('type', 'OTHER')
+            
+            if edge_type == 'OTHER' and current_edge_type not in edge_types:
+                # This is for edges that don't have a specific type defined in edge_types
+                source, target = edge
+                x_edges.extend([pos_3d[source][0], pos_3d[target][0], None])
+                y_edges.extend([pos_3d[source][1], pos_3d[target][1], None])
+                z_edges.extend([pos_3d[source][2], pos_3d[target][2], None])
+            elif current_edge_type == edge_type:
+                source, target = edge
+                x_edges.extend([pos_3d[source][0], pos_3d[target][0], None])
+                y_edges.extend([pos_3d[source][1], pos_3d[target][1], None])
+                z_edges.extend([pos_3d[source][2], pos_3d[target][2], None])
+        
+        if x_edges:  # Only add a trace if there are edges of this type
+            edge_trace = go.Scatter3d(
+                x=x_edges,
+                y=y_edges,
+                z=z_edges,
+                mode='lines',
+                line=dict(color=color, width=1),
+                hoverinfo='none',
+                name=edge_type
+            )
+            edge_traces.append(edge_trace)
+    
+    # Create figure
+    fig = go.Figure(data=[nodes_trace] + edge_traces)
+    
+    # Update layout
+    fig.update_layout(
+        title='VTT Innovation Network - 3D Visualization',
+        scene=dict(
+            xaxis=dict(showticklabels=False, title=''),
+            yaxis=dict(showticklabels=False, title=''),
+            zaxis=dict(showticklabels=False, title=''),
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        legend=dict(
+            title_text='Relationship Types',
+            x=0,
+            y=1,
+            bgcolor='rgba(255, 255, 255, 0.5)'
+        ),
+        showlegend=True
+    )
+    
+    # Save interactive HTML file
+    fig.write_html(os.path.join(output_dir, 'innovation_network_3d.html'))
+    
+    # Save static image as well
+    fig.write_image(os.path.join(output_dir, 'innovation_network_3d.png'), width=1200, height=900)
+    
+    print(f"3D visualization saved to {output_dir}")
 
 
 def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_mapping: Dict, output_dir: str = RESULTS_DIR):

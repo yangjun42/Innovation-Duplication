@@ -45,7 +45,7 @@ Innovation-Duplication/
 
 ## Setup
 
-### Option 1: Using pip
+### Using pip
 
 1. Clone this repository
 2. Install dependencies:
@@ -53,14 +53,6 @@ Innovation-Duplication/
    pip install -r requirements.txt
    ```
 
-### Option 2: Using conda
-
-1. Clone this repository
-2. Create and activate the conda environment:
-   ```
-   conda env create -f environment.yml
-   conda activate vtt-innovation
-   ```
 
 ### API Keys
 
@@ -170,7 +162,7 @@ Main dependencies include:
 - networkx, matplotlib, seaborn: Visualization and network analysis
 - scikit-learn: Machine learning utilities
 
-See `requirements.txt` or `environment.yml` for the complete list.
+See `requirements.txt` for the complete list.
 
 ## Contributors
 
