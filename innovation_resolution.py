@@ -1043,7 +1043,6 @@ def main():
     
     # Step 6: Visualize network
     visualize_network_tufte(analysis_results)
-    visualize_network_3d(analysis_results['graph'], analysis_results)
     
     # Step 7: Export results
     export_results(analysis_results, consolidated_graph, canonical_mapping)
