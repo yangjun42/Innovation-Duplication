@@ -7,3 +7,4 @@ result/
 venvs/
 __pycache__/
 .DS_Store
+*.json
