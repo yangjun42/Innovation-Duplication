@@ -33,6 +33,7 @@ from innovation_utils import (
     find_potential_duplicates,
     calculate_innovation_statistics
 )
+from local_entity_processing import Node, Relationship
 
 # Constants
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -346,15 +347,193 @@ class CacheFactory:
             raise ValueError(f"Unsupported cache type: {cache_type}")
 
 
-def load_and_combine_data() -> pd.DataFrame:
+# 添加通用的文本过滤器
+def is_valid_entity_name(name: str) -> bool:
+    """
+    检查实体名称是否有效，过滤掉明显无效的实体。
+    
+    Args:
+        name: 实体名称
+        
+    Returns:
+        bool: 是否是有效的实体名称
+    """
+    if not name or not isinstance(name, str):
+        return False
+    
+    # 过滤掉太短的名称
+    if len(name.strip()) < 3:
+        return False
+    
+    # 过滤掉只包含数字或特殊字符的名称
+    if all(not c.isalpha() for c in name):
+        return False
+    
+    # 过滤掉常见的占位符名称
+    invalid_patterns = [
+        'null', 'none', 'undefined', 'n/a', 'unknown', 
+        'temp_', 'unknown', 'placeholder', 'example'
+    ]
+    
+    name_lower = name.lower()
+    for pattern in invalid_patterns:
+        if pattern in name_lower:
+            # 特殊处理：如果是以temp_开头但后面有有意义的内容，仍然保留
+            if pattern == 'temp_' and len(name) > 10 and any(c.isalpha() for c in name[5:]):
+                continue
+            return False
+    
+    return True
+
+
+def extract_entities_from_document(doc, pred_entities: List[Dict] = None) -> List[Dict]:
+    """
+    Extract innovation and organization entities from document.
+    Also accumulate extracted entities in the pred_entities list if provided.
+    
+    Args:
+        doc: Source document
+        pred_entities: Optional list to accumulate extracted entities
+        
+    Returns:
+        List of entity dictionaries in the format {"name": str, "type": str}
+    """
+    entities = []
+    
+    # Extract entities from the document (assuming graph_doc format)
+    if hasattr(doc, 'nodes'):
+        for node in doc.nodes:
+            # 获取实体名称，优先使用english_id
+            entity_name = node.properties.get('english_id', node.id) if hasattr(node, 'properties') else node.id
+            
+            # 检查实体名称是否有效
+            if not is_valid_entity_name(entity_name):
+                continue
+                
+            entity = {
+                "name": entity_name,
+                "type": node.type
+            }
+            
+            # 添加描述信息，便于后续过滤和评估
+            if hasattr(node, 'properties') and 'description' in node.properties:
+                entity["description"] = node.properties['description']
+            
+            entities.append(entity)
+            
+            # Accumulate to prediction list if provided
+            if pred_entities is not None:
+                pred_entities.append(entity)
+    
+    return entities
+
+
+def is_valid_relationship(innovation: str, organization: str, relation_type: str) -> bool:
+    """
+    检查关系是否有效，过滤掉明显无效的关系。
+    
+    Args:
+        innovation: 创新名称
+        organization: 组织名称
+        relation_type: 关系类型
+        
+    Returns:
+        bool: 是否是有效的关系
+    """
+    # 检查创新和组织名称是否有效
+    if not is_valid_entity_name(innovation) or not is_valid_entity_name(organization):
+        return False
+    
+    # 检查关系类型是否有效
+    if relation_type not in ["DEVELOPED_BY", "COLLABORATION"]:
+        return False
+    
+    # 过滤掉创新和组织相同的情况
+    if innovation.lower() == organization.lower():
+        return False
+    
+    return True
+
+
+def extract_relationships_from_document(doc, pred_relations: List[Dict] = None) -> List[Dict]:
+    """
+    Extract relationships from document.
+    Also accumulate extracted relationships in the pred_relations list if provided.
+    
+    Args:
+        doc: Source document
+        pred_relations: Optional list to accumulate extracted relationships
+        
+    Returns:
+        List of relationship dictionaries in the format {"innovation": str, "organization": str, "relation": str}
+    """
+    relationships = []
+    
+    # Extract relationships from the document (assuming graph_doc format)
+    if hasattr(doc, 'relationships'):
+        # 首先获取节点的english_id映射
+        node_english_id = {}
+        if hasattr(doc, 'nodes'):
+            for node in doc.nodes:
+                if hasattr(node, 'properties') and 'english_id' in node.properties:
+                    node_english_id[node.id] = node.properties['english_id']
+                else:
+                    node_english_id[node.id] = node.id
+        
+        for rel in doc.relationships:
+            # 只包含DEVELOPED_BY和COLLABORATION关系
+            if rel.type in ["DEVELOPED_BY", "COLLABORATION"]:
+                # 获取源和目标的名称，优先使用english_id
+                source_name = node_english_id.get(rel.source, rel.source)
+                target_name = node_english_id.get(rel.target, rel.target)
+                
+                # 确保source/target是正确的创新/组织映射
+                if rel.source_type == "Innovation" and rel.target_type == "Organization":
+                    innovation_name = source_name
+                    organization_name = target_name
+                elif rel.source_type == "Organization" and rel.target_type == "Innovation":
+                    innovation_name = target_name
+                    organization_name = source_name
+                else:
+                    # 如果关系不是创新-组织之间的关系，跳过
+                    continue
+                
+                # 检查关系是否有效
+                if not is_valid_relationship(innovation_name, organization_name, rel.type):
+                    continue
+                
+                relationship = {
+                    "innovation": innovation_name,
+                    "organization": organization_name,
+                    "relation": rel.type
+                }
+                
+                # 添加描述信息，便于后续过滤和评估
+                if hasattr(rel, 'properties') and 'description' in rel.properties:
+                    relationship["description"] = rel.properties['description']
+                
+                relationships.append(relationship)
+                
+                # Accumulate to prediction list if provided
+                if pred_relations is not None:
+                    pred_relations.append(relationship)
+    
+    return relationships
+
+
+def load_and_combine_data() -> Tuple[pd.DataFrame, List[Dict], List[Dict]]:
     """
     Load relationship data from both company websites and VTT domain,
-    combine them into a single dataframe.
+    combine them into a single dataframe, and collect entities and relationships.
     
     Returns:
-        pd.DataFrame: Combined relationship dataframe
+        Tuple of (combined dataframe, all_pred_entities, all_pred_relations)
     """
     print("Loading data from company websites...")
+    
+    # Initialize lists to collect predicted entities and relationships
+    all_pred_entities = []
+    all_pred_relations = []
     
     # Load company domain data
     df_company = pd.read_csv(os.path.join(DATAFRAMES_DIR, 'vtt_mentions_comp_domain.csv'))
@@ -370,7 +549,14 @@ def load_and_combine_data() -> pd.DataFrame:
                 file_path = os.path.join(GRAPH_DOCS_COMPANY, f"{row['Company name'].replace(' ','_')}_{i}.pkl")
                 if os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
-                        graph_doc = pickle.load(f)[0]
+                        graph_docs = pickle.load(f)
+                        graph_doc = graph_docs[0]
+                    
+                    # Extract and collect entities
+                    extract_entities_from_document(graph_doc, all_pred_entities)
+                    
+                    # Extract and collect relationships
+                    extract_relationships_from_document(graph_doc, all_pred_relations)
                     
                     node_description = {}
                     node_en_id = {}
@@ -419,7 +605,14 @@ def load_and_combine_data() -> pd.DataFrame:
                 file_path = os.path.join(GRAPH_DOCS_VTT, f"{row['Vat_id'].replace(' ','_')}_{index_source}.pkl")
                 if os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
-                        graph_doc = pickle.load(f)[0]
+                        graph_docs = pickle.load(f)
+                        graph_doc = graph_docs[0]
+                    
+                    # Extract and collect entities
+                    extract_entities_from_document(graph_doc, all_pred_entities)
+                    
+                    # Extract and collect relationships
+                    extract_relationships_from_document(graph_doc, all_pred_relations)
                     
                     node_description = {}
                     node_en_id = {}
@@ -462,7 +655,7 @@ def load_and_combine_data() -> pd.DataFrame:
     combined_df = pd.concat([df_relationships_comp_url, df_relationships_vtt_domain], ignore_index=True)
     print(f"Combined dataframe contains {len(combined_df)} relationships")
     
-    return combined_df
+    return combined_df, all_pred_entities, all_pred_relations
 
 
 def initialize_openai_client():
@@ -590,7 +783,7 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
                               cache_config: Dict = None) -> Dict[str, str]:
     """
     Identify and cluster duplicate innovations using semantic similarity from textual embeddings.
-
+    
     Args:
         df_relationships (pd.DataFrame): A relationship dataset containing Innovation nodes and their connections.
         model (callable, optional): Embedding model function that converts text to vector. Required if embeddings need to be generated.
@@ -599,7 +792,7 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
             - backend: 后端类型 ('json' 或 'memory')
             - path: 缓存文件路径
             - use_cache: 是否启用缓存
-
+    
     Returns:
         Dict[str, str]: A dictionary mapping each innovation ID to its canonical ID (representative of a cluster).
     """
@@ -623,7 +816,7 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
     innovations = df_relationships[df_relationships['source_type'] == 'Innovation']
     unique_innovations = innovations.drop_duplicates(subset=['source_id'])
     print(f"Found {len(unique_innovations)} unique innovations")
-
+    
     # Step 2: Construct a detailed textual context for each innovation
     # This includes: name, description, developers, and relationship-based context
     innovation_features = {}
@@ -636,10 +829,10 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
 
             # Append developers (organizations linked by DEVELOPED_BY relationship)
             developed_by = df_relationships[
-                (df_relationships['source_id'] == innovation_id) &
+                (df_relationships['source_id'] == innovation_id) & 
                 (df_relationships['relationship_type'] == 'DEVELOPED_BY')
             ]['target_english_id'].dropna().unique().tolist()
-
+            
             if developed_by:
                 context += f" Developed by: {', '.join(developed_by)}."
 
@@ -651,9 +844,9 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
                 target_desc = str(rel_row.get('target_description', '')).strip()
                 if rel_desc and target_name and target_desc:
                     context += f" {rel_desc} {target_name}, which is described as: {target_desc}."
-
+            
             innovation_features[innovation_id] = context
-
+    
     # Step 3: Generate embeddings or use text features directly
     print("Generating features for similarity comparison...")
     
@@ -692,14 +885,14 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
     innovation_ids = [item[0] for item in embedding_items]
     embedding_matrix = np.array([item[1] for item in embedding_items])
     similarity_matrix = cosine_similarity(embedding_matrix)
-
+    
     clusters = {}
     processed = set()
 
     for i, id1 in enumerate(tqdm(innovation_ids, desc="Clustering innovations")):
         if id1 in processed:
             continue
-
+            
         cluster = [id1]
         for j, id2 in enumerate(innovation_ids):
             if id1 != id2 and id2 not in processed:
@@ -707,20 +900,20 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None,
                 if similarity > threshold:
                     cluster.append(id2)
                     processed.add(id2)
-
+        
         canonical_id = id1  # use the first item as the canonical (representative) ID
         clusters[canonical_id] = cluster
         processed.add(id1)
-
+    
     # Step 5: Build a mapping from each innovation ID to its canonical representative
     canonical_mapping = {}
     for canonical_id, cluster_ids in clusters.items():
         for innovation_id in cluster_ids:
             canonical_mapping[innovation_id] = canonical_id
-
+    
     print(f"Found {len(clusters)} unique innovation clusters")
     print(f"Reduced from {len(innovation_features)} to {len(clusters)} innovations")
-
+    
     return canonical_mapping
 
 
@@ -908,7 +1101,6 @@ def analyze_innovation_network(consolidated_graph: Dict) -> Dict:
     }
 
 
-
 def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_mapping: Dict, output_dir: str = RESULTS_DIR):
     """
     Export analysis results and consolidated data to files.
@@ -1002,6 +1194,10 @@ def main():
                        help="Path to cache file (for file-based backends)")
     parser.add_argument("--no-cache", action="store_true", 
                        help="Disable caching")
+    parser.add_argument("--skip-eval", action="store_true",
+                       help="Skip evaluation step")
+    parser.add_argument("--auto-label", action="store_true",
+                       help="Automatically label consistency samples and generate gold standard files")
     
     args = parser.parse_args()
     
@@ -1016,8 +1212,8 @@ def main():
     print("Starting VTT Innovation Resolution process...")
     print(f"Cache configuration: {cache_config}")
     
-    # Step 1: Load and combine data
-    df_relationships = load_and_combine_data()
+    # Step 1: Load and combine data (modified to also collect predictions)
+    df_relationships, all_pred_entities, all_pred_relations = load_and_combine_data()
     
     # Step 2: Initialize OpenAI client
     llm, embed_model = initialize_openai_client()
@@ -1044,8 +1240,113 @@ def main():
     # Step 6: Visualize network
     visualize_network_tufte(analysis_results)
     
+    # Save predicted entities and relationships for evaluation
+    os.makedirs("evaluation", exist_ok=True)
+    
+    # Remove duplicates from predicted entities and relations
+    unique_pred_entities = []
+    seen_entities = set()
+    for entity in all_pred_entities:
+        entity_key = (entity["name"].lower(), entity["type"])
+        if entity_key not in seen_entities:
+            seen_entities.add(entity_key)
+            unique_pred_entities.append(entity)
+    
+    unique_pred_relations = []
+    seen_relations = set()
+    for relation in all_pred_relations:
+        relation_key = (relation["innovation"].lower(), relation["organization"].lower(), relation["relation"])
+        if relation_key not in seen_relations:
+            seen_relations.add(relation_key)
+            unique_pred_relations.append(relation)
+    
+    # Save to JSON files
+    pred_entities_path = os.path.join("evaluation", "pred_entities.json")
+    pred_relations_path = os.path.join("evaluation", "pred_relations.json")
+    
+    with open(pred_entities_path, "w", encoding="utf-8") as f:
+        json.dump(unique_pred_entities, f, ensure_ascii=False, indent=2)
+    
+    with open(pred_relations_path, "w", encoding="utf-8") as f:
+        json.dump(unique_pred_relations, f, ensure_ascii=False, indent=2)
+    
+    print(f"Saved {len(unique_pred_entities)} unique predicted entities to {pred_entities_path}")
+    print(f"Saved {len(unique_pred_relations)} unique predicted relations to {pred_relations_path}")
+    
     # Step 7: Export results
     export_results(analysis_results, consolidated_graph, canonical_mapping)
+    
+    # Step 8: Run evaluation if not skipped
+    if not args.skip_eval:
+        # Convert consolidated_graph to Node and Relationship objects for evaluation
+        from evaluation import run_all_evaluations
+        
+        # Create Node objects for merged innovations
+        merged_innovations = []
+        for inno_id, inno_data in consolidated_graph['innovations'].items():
+            node = Node(
+                id=inno_id,
+                type="Innovation",
+                properties={
+                    "aliases": "|".join(list(inno_data['names'])) if inno_data['names'] else "",
+                    "source_docs": "|".join(list(inno_data['descriptions'])) if inno_data['descriptions'] else "",
+                    "developed_by": "|".join(list(inno_data['developed_by'])) if inno_data['developed_by'] else "",
+                    "sources": "|".join(list(inno_data['sources'])) if inno_data['sources'] else ""
+                }
+            )
+            merged_innovations.append(node)
+        
+        # Create all nodes
+        all_nodes = []
+        
+        # Add innovations
+        for inno_id, inno_data in consolidated_graph['innovations'].items():
+            node = Node(
+                id=inno_id,
+                type="Innovation",
+                properties={
+                    "name": list(inno_data['names'])[0] if inno_data['names'] else inno_id,
+                    "description": list(inno_data['descriptions'])[0] if inno_data['descriptions'] else ""
+                }
+            )
+            all_nodes.append(node)
+        
+        # Add organizations
+        for org_id, org_data in consolidated_graph['organizations'].items():
+            node = Node(
+                id=org_id,
+                type="Organization",
+                properties={
+                    "name": str(org_data['name']) if org_data['name'] is not None else "",
+                    "description": str(org_data['description']) if org_data['description'] is not None else ""
+                }
+            )
+            all_nodes.append(node)
+        
+        # Create relationships
+        all_rels = []
+        for rel_data in consolidated_graph['relationships']:
+            rel = Relationship(
+                source=rel_data['source'],
+                source_type="Innovation" if rel_data['source'] in consolidated_graph['innovations'] else "Organization",
+                target=rel_data['target'],
+                target_type="Organization" if rel_data['target'] in consolidated_graph['organizations'] else "Innovation",
+                type=rel_data['type'],
+                properties={}
+            )
+            all_rels.append(rel)
+        
+        # Run evaluation
+        evaluation_results = run_all_evaluations(
+            merged_innovations=merged_innovations,
+            all_nodes=all_nodes,
+            all_rels=all_rels,
+            data_dir=DATA_DIR,
+            results_dir=RESULTS_DIR,
+            eval_dir="evaluation",
+            auto_label=args.auto_label,
+            llm=llm  # 传递语言模型以便自动标注
+        )
     
     print("Innovation Resolution process completed successfully!")
     print(f"Results and visualizations saved to {RESULTS_DIR}")
