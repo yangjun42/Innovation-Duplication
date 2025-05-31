@@ -17,6 +17,7 @@ kaleido
 
 # Machine learning
 scikit-learn
+hdbscan
 
 # OpenAI API integration
 langchain-openai
