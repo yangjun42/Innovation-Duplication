@@ -677,9 +677,9 @@ def initialize_openai_client():
         llm, embedding model
     """
     import json
-    
-    config_path = os.path.join(DATA_DIR, 'keys', 'azure_config.json')
-    
+    # ✅ 优先从环境变量读取路径
+    config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
+
     if not os.path.exists(config_path):
         print(f"API configuration file not found at {config_path}")
         print("Please obtain API keys and create the configuration file as described in the README.md")
@@ -687,11 +687,7 @@ def initialize_openai_client():
     
     with open(config_path, 'r') as f:
         config = json.load(f)
-    
-    # Dimensions for embedding
     dim = 3072
-    
-    # Initialize LLM with gpt-4.1-mini
     model_name = 'gpt-4.1-mini'
     if model_name in config:
         llm = AzureChatOpenAI(
@@ -702,7 +698,6 @@ def initialize_openai_client():
             temperature=0
         )
         
-        # Initialize embedding model
         embedding_model = AzureOpenAIEmbeddings(
             api_key=config[model_name]['api_key'],
             azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
