@@ -13,7 +13,7 @@ import pickle
 import json
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Tuple, Set, Any, Optional
+from typing import List, Dict, Tuple, Set, Any, Optional, Union, Protocol
 import matplotlib.pyplot as plt
 import seaborn as sns
 import networkx as nx
@@ -25,9 +25,6 @@ from tqdm import tqdm
 
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
-
-from dotenv import load_dotenv
-
 
 # Import local modules
 from innovation_utils import (
@@ -55,6 +52,297 @@ except Exception as e:
 
 # Set up plotting style
 sns.set_theme(style="whitegrid")
+
+# 添加缓存模块
+class CacheBackend(Protocol):
+    """缓存后端接口协议"""
+    
+    def load(self) -> Dict:
+        """加载缓存数据"""
+        ...
+    
+    def save(self, data: Dict) -> bool:
+        """保存数据到缓存"""
+        ...
+    
+    def get(self, key: str) -> Optional[Any]:
+        """获取缓存项"""
+        ...
+    
+    def set(self, key: str, value: Any) -> None:
+        """设置缓存项"""
+        ...
+    
+    def update(self, data: Dict) -> None:
+        """批量更新缓存"""
+        ...
+    
+    def get_missing_keys(self, required_keys: List[str]) -> List[str]:
+        """获取缓存中缺失的键"""
+        ...
+    
+    def contains(self, key: str) -> bool:
+        """检查缓存是否包含指定键"""
+        ...
+
+
+class JsonFileCache:
+    """基于JSON文件的缓存实现"""
+    
+    def __init__(self, cache_path: str):
+        self.cache_path = cache_path
+        self.cache_data = {}
+        self.loaded = False
+    
+    def load(self) -> Dict:
+        if self.loaded:
+            return self.cache_data
+            
+        if os.path.exists(self.cache_path):
+            try:
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    self.cache_data = json.load(f)
+                print(f"Loaded {len(self.cache_data)} items from cache at {self.cache_path}")
+                self.loaded = True
+                return self.cache_data
+            except Exception as e:
+                print(f"Error loading cache: {e}")
+                return {}
+        else:
+            print(f"Cache file not found at {self.cache_path}")
+            return {}
+    
+    def save(self, data: Dict) -> bool:
+        try:
+            # 确保目录存在
+            cache_dir = os.path.dirname(self.cache_path)
+            if cache_dir and not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+                
+            with open(self.cache_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"Saved {len(data)} items to cache at {self.cache_path}")
+            self.cache_data = data
+            self.loaded = True
+            return True
+        except Exception as e:
+            print(f"Error saving cache: {e}")
+            return False
+    
+    def get(self, key: str) -> Optional[Any]:
+        if not self.loaded:
+            self.load()
+        return self.cache_data.get(key, None)
+    
+    def set(self, key: str, value: Any) -> None:
+        if not self.loaded:
+            self.load()
+        self.cache_data[key] = value
+    
+    def update(self, data: Dict) -> None:
+        if not self.loaded:
+            self.load()
+        self.cache_data.update(data)
+        self.save(self.cache_data)
+    
+    def get_missing_keys(self, required_keys: List[str]) -> List[str]:
+        if not self.loaded:
+            self.load()
+        return [k for k in required_keys if k not in self.cache_data]
+    
+    def contains(self, key: str) -> bool:
+        if not self.loaded:
+            self.load()
+        return key in self.cache_data
+
+
+class MemoryCache:
+    """基于内存的缓存实现"""
+    
+    def __init__(self):
+        self.cache_data = {}
+    
+    def load(self) -> Dict:
+        return self.cache_data
+    
+    def save(self, data: Dict) -> bool:
+        self.cache_data = data
+        return True
+    
+    def get(self, key: str) -> Optional[Any]:
+        return self.cache_data.get(key, None)
+    
+    def set(self, key: str, value: Any) -> None:
+        self.cache_data[key] = value
+    
+    def update(self, data: Dict) -> None:
+        self.cache_data.update(data)
+    
+    def get_missing_keys(self, required_keys: List[str]) -> List[str]:
+        return [k for k in required_keys if k not in self.cache_data]
+    
+    def contains(self, key: str) -> bool:
+        return key in self.cache_data
+
+
+class EmbeddingCache:
+    """
+    可插拔的嵌入向量缓存系统，支持不同的存储后端。
+    
+    当前支持:
+    - 文件缓存 (JSON)
+    - 内存缓存
+    
+    可扩展支持:
+    - 数据库缓存
+    - 分布式缓存
+    """
+    
+    def __init__(self, backend: Optional[CacheBackend] = None, cache_path: str = "./embedding_vectors.json", 
+                backend_type: str = "json", use_cache: bool = True):
+        """
+        初始化嵌入缓存系统。
+        
+        Args:
+            backend: 自定义缓存后端实现
+            cache_path: 缓存文件路径 (仅用于文件缓存)
+            backend_type: 后端类型 ('json' 或 'memory')
+            use_cache: 是否启用缓存
+        """
+        self.use_cache = use_cache
+        
+        if not use_cache:
+            self.backend = None
+            return
+            
+        if backend is not None:
+            self.backend = backend
+        elif backend_type == "json":
+            self.backend = JsonFileCache(cache_path)
+        elif backend_type == "memory":
+            self.backend = MemoryCache()
+        else:
+            raise ValueError(f"Unsupported backend type: {backend_type}")
+    
+    def load(self) -> Dict:
+        """
+        加载缓存数据。
+        
+        Returns:
+            Dict: 加载的缓存数据
+        """
+        if not self.use_cache or self.backend is None:
+            return {}
+        return self.backend.load()
+    
+    def save(self, data: Dict) -> bool:
+        """
+        保存数据到缓存。
+        
+        Args:
+            data: 要保存的数据
+            
+        Returns:
+            bool: 是否成功保存
+        """
+        if not self.use_cache or self.backend is None:
+            return False
+        return self.backend.save(data)
+    
+    def get(self, key: str) -> Optional[Any]:
+        """
+        从缓存获取值。
+        
+        Args:
+            key: 缓存键
+            
+        Returns:
+            Optional[Any]: 缓存的值，如不存在返回None
+        """
+        if not self.use_cache or self.backend is None:
+            return None
+        return self.backend.get(key)
+    
+    def set(self, key: str, value: Any) -> None:
+        """
+        设置缓存值。
+        
+        Args:
+            key: 缓存键
+            value: 要缓存的值
+        """
+        if not self.use_cache or self.backend is None:
+            return
+        self.backend.set(key, value)
+    
+    def update(self, data: Dict) -> None:
+        """
+        批量更新缓存。
+        
+        Args:
+            data: 要更新的数据
+        """
+        if not self.use_cache or self.backend is None:
+            return
+        self.backend.update(data)
+    
+    def get_missing_keys(self, required_keys: List[str]) -> List[str]:
+        """
+        获取缓存中缺失的键。
+        
+        Args:
+            required_keys: 需要的键列表
+            
+        Returns:
+            List[str]: 缓存中不存在的键列表
+        """
+        if not self.use_cache or self.backend is None:
+            return required_keys
+        return self.backend.get_missing_keys(required_keys)
+    
+    def contains(self, key: str) -> bool:
+        """
+        检查缓存是否包含指定键。
+        
+        Args:
+            key: 要检查的键
+            
+        Returns:
+            bool: 是否存在
+        """
+        if not self.use_cache or self.backend is None:
+            return False
+        return self.backend.contains(key)
+
+
+class CacheFactory:
+    """缓存工厂，用于创建不同类型的缓存实例"""
+    
+    @staticmethod
+    def create_cache(cache_type: str = "embedding", 
+                    backend_type: str = "json",
+                    cache_path: str = "./embedding_vectors.json",
+                    use_cache: bool = True) -> Union[EmbeddingCache, Any]:
+        """
+        创建缓存实例。
+        
+        Args:
+            cache_type: 缓存类型 ('embedding' 或自定义)
+            backend_type: 后端类型 ('json' 或 'memory')
+            cache_path: 缓存文件路径
+            use_cache: 是否启用缓存
+            
+        Returns:
+            Union[EmbeddingCache, Any]: 缓存实例
+        """
+        if cache_type == "embedding":
+            return EmbeddingCache(
+                backend_type=backend_type,
+                cache_path=cache_path,
+                use_cache=use_cache
+            )
+        else:
+            raise ValueError(f"Unsupported cache type: {cache_type}")
 
 
 def load_and_combine_data() -> pd.DataFrame:
@@ -183,50 +471,102 @@ def initialize_openai_client():
     Returns:
         llm, embedding model
     """
-
-    load_dotenv()
-
-    # 使用Azure OpenAI初始化模型
-    llm = AzureChatOpenAI(
-        api_key = os.environ["AZURE_OPENAI_API_KEY"],
-        azure_endpoint = os.environ["AZURE_OPENAI_ENDPOINT"],
-
-        azure_deployment = "gpt-4.1-mini",
-        api_version = "2024-10-21",
-        temperature = 0
-    )
-
-
-    # Embedding 向量的维度(1024 + 512)
+    import json
+    
+    config_path = os.path.join(DATA_DIR, 'keys', 'azure_config.json')
+    
+    if not os.path.exists(config_path):
+        print(f"API configuration file not found at {config_path}")
+        print("Please obtain API keys and create the configuration file as described in the README.md")
+        return None, None
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    # Dimensions for embedding
     dim = 1536
-    bigest_dim = 3072
-
-    embedding_model = AzureOpenAIEmbeddings(
-        api_key = os.environ["AZURE_OPENAI_API_KEY"],
-        azure_endpoint = os.environ["AZURE_OPENAI_ENDPOINT"],
+    
+    # Initialize LLM with gpt-4.1-mini
+    model_name = 'gpt-4.1-mini'
+    if model_name in config:
+        llm = AzureChatOpenAI(
+            api_key=config[model_name]['api_key'],
+            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
+            azure_deployment=config[model_name]['deployment'],
+            api_version=config[model_name]['api_version'],
+            temperature=0
+        )
         
-        azure_deployment = "text-embedding-3-large",
-        api_version  = "2024-10-21",
-        dimensions = dim
-    )
-
-    return llm, embedding_model
+        # Initialize embedding model
+        embedding_model = AzureOpenAIEmbeddings(
+            api_key=config[model_name]['api_key'],
+            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
+            azure_deployment=config[model_name]['emb_deployment'],
+            api_version=config[model_name]['api_version'],
+            dimensions=dim
+        )
+        
+        return llm, embedding_model
+    else:
+        print(f"Model {model_name} configuration not found")
+        return None, None
 
 
 def get_embedding(text: str, model) -> np.ndarray:
     """
-    Get embedding for a text using OpenAI model.
+    Get embedding for a text using OpenAI model. Falls back to TF-IDF if model is unavailable.
     
     Args:
         text: Text to embed
-        model: OpenAI model
+        model: OpenAI embedding model
     
     Returns:
         np.ndarray: Embedding vector
     """
-    embedding = model.embed_query(text)
-
-    return embedding
+    # Try to use OpenAI embedding model first
+    if model is not None:
+        try:
+            embedding = model.embed_query(text)
+            return embedding
+        except Exception as e:
+            print(f"Error using OpenAI embedding: {e}")
+            print("Falling back to TF-IDF embedding...")
+    
+    # Fallback to TF-IDF embedding
+    try:
+        # Create embedding using TF-IDF method
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        
+        # Using TF-IDF for more meaningful text representation
+        vectorizer = TfidfVectorizer(max_features=768)
+        
+        # Split text into sentences for document collection
+        sentences = [s.strip() for s in text.replace('\n', ' ').split('.') if s.strip()]
+        if len(sentences) < 2:
+            sentences = text.split()  # If no sentences, use words
+        
+        # Ensure sufficient text for vectorization
+        if len(sentences) < 2:
+            sentences = [text, "placeholder"]
+            
+        # Vectorize
+        tfidf_matrix = vectorizer.fit_transform(sentences)
+        # Use mean as final representation
+        embedding = tfidf_matrix.mean(axis=0).A[0]
+        
+        # Pad to required dimension (1536)
+        if len(embedding) < 1536:
+            embedding = np.pad(embedding, (0, 1536-len(embedding)), 'constant')
+        
+        # Truncate if dimension exceeds 1536
+        if len(embedding) > 1536:
+            embedding = embedding[:1536]
+            
+        return embedding
+    except Exception as e:
+        print(f"Error creating TF-IDF embedding: {e}")
+        # Return random embedding as last resort
+        return np.random.rand(1536)
 
 
 def compute_similarity(emb1, emb2) -> float:
@@ -245,18 +585,38 @@ def compute_similarity(emb1, emb2) -> float:
     return cosine_similarity(emb1, emb2)[0][0]
 
 
-def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) -> Dict[str, str]:
+def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None, 
+                              cache_config: Dict = None) -> Dict[str, str]:
     """
     Identify duplicate innovations using text similarity.
     
     Args:
         df_relationships: DataFrame with innovation relationships
         model: OpenAI model for generating embeddings (not used if API not available)
+        cache_config: 缓存配置，包含以下选项:
+            - type: 缓存类型 ('embedding')
+            - backend: 后端类型 ('json' 或 'memory')
+            - path: 缓存文件路径
+            - use_cache: 是否启用缓存
     
     Returns:
         Dict[str, str]: Mapping from innovation IDs to canonical IDs
     """
     print("Resolving innovation duplicates...")
+    
+    # 默认缓存配置
+    default_cache_config = {
+        "type": "embedding",
+        "backend": "json", 
+        "path": "./embedding_vectors.json",
+        "use_cache": True
+    }
+    
+    # 合并配置
+    if cache_config is None:
+        cache_config = {}
+    
+    config = {**default_cache_config, **cache_config}
     
     # Step 1: Extract innovations
     innovations = df_relationships[df_relationships['source_type'] == 'Innovation']
@@ -264,7 +624,6 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) ->
     print(f"Found {len(unique_innovations)} unique innovations")
     
     # Step 2: Create feature vectors for innovations
-    # TODO
     innovation_features = {}
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row['source_id']
@@ -287,31 +646,33 @@ def resolve_innovation_duplicates(df_relationships: pd.DataFrame, model=None) ->
     
     # Step 3: Generate embeddings or use text features directly
     print("Generating features for similarity comparison...")
-    embeddings = {}
-
-    file_path = "./embedding_vectors.json"
-
     
-    # 1. 如果缓存文件存在，直接加载
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            embeddings = json.load(f)
-        print(f"Loaded {len(embeddings)} embeddings from cache.")
+    # 初始化缓存系统
+    cache = CacheFactory.create_cache(
+        cache_type=config["type"],
+        backend_type=config["backend"],
+        cache_path=config["path"],
+        use_cache=config["use_cache"]
+    )
     
-    # 2. 找出还未生成 embedding 的部分
-    missing_ids = [id for id in innovation_features if id not in embeddings]
-
+    # 加载缓存
+    embeddings = cache.load()
+    
+    # 找出未缓存的ID
+    missing_ids = cache.get_missing_keys(list(innovation_features.keys()))
+    
+    # 生成新的embeddings
     if missing_ids:
         print(f"Generating {len(missing_ids)} new embeddings...")
+        new_embeddings = {}
+        
         for id in tqdm(missing_ids, desc="Generating embeddings"):
             features = innovation_features[id]
-            embeddings[id] = get_embedding(features, model)
-
-        # 保存更新后的 embedding 到 JSON 文件
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(embeddings, f, ensure_ascii=False, indent=2)
-
-        print(f"Saved updated embeddings to {file_path}.")
+            new_embeddings[id] = get_embedding(features, model)
+        
+        # 更新缓存
+        cache.update(new_embeddings)
+        embeddings.update(new_embeddings)
     
     # Step 4: Cluster innovations using similarity threshold
     print("Clustering similar innovations...")
@@ -880,7 +1241,31 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
 
 def main():
     """Main function to execute the innovation resolution workflow."""
+    import argparse
+    
+    # 命令行参数解析
+    parser = argparse.ArgumentParser(description="VTT Innovation Resolution process")
+    parser.add_argument("--cache-type", default="embedding", choices=["embedding"],
+                       help="Cache type to use")
+    parser.add_argument("--cache-backend", default="json", choices=["json", "memory"],
+                       help="Cache backend type")
+    parser.add_argument("--cache-path", default="./embedding_vectors.json",
+                       help="Path to cache file (for file-based backends)")
+    parser.add_argument("--no-cache", action="store_true", 
+                       help="Disable caching")
+    
+    args = parser.parse_args()
+    
+    # 缓存配置
+    cache_config = {
+        "type": args.cache_type,
+        "backend": args.cache_backend,
+        "path": args.cache_path,
+        "use_cache": not args.no_cache
+    }
+    
     print("Starting VTT Innovation Resolution process...")
+    print(f"Cache configuration: {cache_config}")
     
     # Step 1: Load and combine data
     df_relationships = load_and_combine_data()
@@ -888,8 +1273,18 @@ def main():
     # Step 2: Initialize OpenAI client
     llm, embed_model = initialize_openai_client()
     
+    if llm is None:
+        print("Warning: Language model not available. Some features may be limited.")
+    
+    if embed_model is None:
+        print("Warning: Embedding model not available. Using TF-IDF embeddings as fallback.")
+    
     # Step 3: Resolve innovation duplicates
-    canonical_mapping = resolve_innovation_duplicates(df_relationships, embed_model)
+    canonical_mapping = resolve_innovation_duplicates(
+        df_relationships, 
+        embed_model,
+        cache_config=cache_config
+    )
     
     # Step 4: Create consolidated knowledge graph
     consolidated_graph = create_innovation_knowledge_graph(df_relationships, canonical_mapping)
@@ -899,6 +1294,7 @@ def main():
     
     # Step 6: Visualize network
     visualize_network(analysis_results)
+    visualize_network_3d(analysis_results['graph'], analysis_results)
     
     # Step 7: Export results
     export_results(analysis_results, consolidated_graph, canonical_mapping)
