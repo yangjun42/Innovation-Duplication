@@ -5,6 +5,7 @@
 import os
 import streamlit as st
 from streamlit.components.v1 import html
+
 from innovation_resolution import chat_bot
 
 # ----------------------------
@@ -17,21 +18,25 @@ st.title("🔍 VTT Innovation Knowledge Graph Platform")
 # Introduction
 # ----------------------------
 st.markdown("""
-Welcome to the **VTT Innovation Knowledge Graph Platform**.
+#### Welcome to the **VTT Innovation Knowledge Graph Platform**!
 
-This tool helps you explore relationships between innovations and organizations based on publicly available data.
-The platform includes:
-- A **semantic assistant** that helps you navigate the graph via natural language queries.
-- **Interactive resultsizations** of innovation networks in both 2D and 3D.
-- **Statistical dashboards** that summarize key patterns and contributors.
+#### This tool helps you explore relationships between innovations and organizations based on publicly available data
+#### The platform includes:
+- 🌐 **Interactive resultsizations** of innovation networks in both 2D and 3D.
+- 🌟 **Statistical dashboards** that summarize key patterns and contributors.
+- 🧠 A **semantic assistant** that helps you navigate the graph via natural language queries.
 
-Scroll down to explore each module below.
+#### Scroll down to explore each module below:
 """)
 #wanchengle
 # --- Display HTML with Expand Button ---
+st.header("🌐 Network Graph Visualizations")
+
+
+#在ein的本地
 html_path = "results/innovation_network_3d.html"
 if os.path.exists(html_path):
-    st.subheader("3D Interactive Network (Plotly)")
+    st.subheader("Interactive Network (Before Dedupulication)")
     with open(html_path, "r", encoding="utf-8") as f:
         html(f.read(), height=600)
 else:
@@ -39,9 +44,20 @@ else:
 
 # --- Display HTML with Expand Button ---
 
+st.markdown("""
+These visualizations represent the relationships between innovations and organizations:
+
+- **Blue nodes**: Innovations
+- **Green nodes**: Organizations
+- **Red edges**: "Developed By" relationships
+- **Blue edges**: Collaborations
+
+Hover or zoom to explore the connections. The layout is generated based on semantic clustering.
+""")
+
 html_path = "results/innovation_network_tufte_3D.html"
 if os.path.exists(html_path):
-    st.subheader("3D Interactive Network (Plotly)")
+    st.subheader("3D Interactive Network (After Dedupulication)")
     with open(html_path, "r", encoding="utf-8") as f:
         html(f.read(), height=600)
 else:
@@ -49,53 +65,85 @@ else:
 st.divider()
 
 
-# ----------------------------
-# Network Graph Visualizations
-# ----------------------------
-st.header("🌐 Network Graph Visualizations")
-
-img_path = "results/innovation_network_tufte_2D.png"
-if os.path.exists(img_path):
-    st.subheader("🖼️ 2D Network Snapshot (PNG)")
-    st.image(img_path, use_column_width=True)
-else:
-    st.warning("2D PNG image not found.")
 
 # ----------------------------
 # Innovation Metrics Dashboard
 # ----------------------------
-st.header("📈 Innovation Metrics Dashboard")
+st.header(" 🌟 Innovation Metrics Dashboard")
+st.markdown("""
+These charts summarize statistical patterns in the innovation network:
 
-img_stat = "results/innovation_stats_tufte.png"
-if os.path.exists(img_stat):
+- Count of innovations
+- Proportion of multi-source or multi-developer innovations
+- Top contributing organizations
+""")
+
+img_path = "results/innovation_network_tufte_2D.png"
+if os.path.exists(img_path):
+    st.subheader("2D Network Snapshot")
+    st.image(img_path, use_container_width=True)
+else:
+    st.warning("2D PNG image not found.")
+
+
+
+
+# 第二行：两列展示 Statistics 和 Top Organizations
+col1, col2 = st.columns(2)
+
+with col2:
     st.subheader("Key Innovation Statistics")
-    st.image(img_stat, use_column_width=True)
-else:
-    st.warning("Innovation stats image not found.")
+    img_stat = "results/innovation_stats_tufte.png"
+    if os.path.exists(img_stat):
+        st.image(img_stat, use_container_width=True)
+        st.markdown("""
+        Summary statistics highlighting:
+        - Total innovations in the dataset
+        - Innovations sourced from multiple data providers
+        - Innovations developed by more than one organization
+        """)
+    else:
+        st.warning("Innovation stats image not found.")
 
-img_top_orgs = "results/top_organizations_tufte.png"
-if os.path.exists(img_top_orgs):
+with col1:
     st.subheader("Top Contributing Organizations")
-    st.image(img_top_orgs, use_column_width=True)
-else:
-    st.warning("Top organizations image not found.")
-
-
+    img_top_orgs = "results/top_organizations.png"
+    if os.path.exists(img_top_orgs):
+        st.image(img_top_orgs, use_container_width=True)
+        st.markdown("""
+        - Organizations ranked by the number of innovations they have contributed to.
+        - A great way to identify major innovation players in the ecosystem.
+        """)
+    else:
+        st.warning("Top organizations image not found.")
 # ----------------------------
 # Semantic Graph Assistant
 # ----------------------------
 
 #chatbot部分
-st.header("🧠 Semantic Graph Assistant")
+# st.header("🧠 Semantic Graph Assistant")
 
-query = st.text_input("Ask a question (e.g., 'Which organizations developed the most innovations?'):")
+# query = st.text_input("💬 free-form questions like 'Who developed nuclear energy innovations?', 'Which organizations developed the most innovations?':")
 
-if query:
-    # TODO: Replace with actual FAISS + LangChain response
-    st.info("This is a placeholder response. Semantic search will be available here soon.")
-    with st.spinner("Thinking..."):
-        reply = chat_bot(query)
-    st.success("Response:")
-    st.markdown(reply)
+# if query:
+#     with st.spinner("Retrieving relevant information..."):
+#         reply = chat_bot(query)
+#     st.success("🧠 Answer:")
+#     st.markdown(reply)
+#     st.info("🔎 This answer is based on the top 3 semantically similar innovation descriptions retrieved from the knowledge graph.")
 
-st.divider()
+# st.divider()
+
+
+with st.sidebar:
+    st.header("💬 Ask the AI Assistant")
+    user_input = st.chat_input("Ask something...Who developed nuclear energy innovations?, Which organizations developed the most innovations?:")
+
+    if user_input:
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = chat_bot(user_input)
+                st.markdown(response)
