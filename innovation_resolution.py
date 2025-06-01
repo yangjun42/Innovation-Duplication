@@ -39,8 +39,6 @@ from langchain.prompts import PromptTemplate
 
 import math
 
-# Global variable for descriptions retrieve.
-innovation_features = {}
 
 # Import local modules
 from innovation_utils import (
@@ -872,8 +870,8 @@ def resolve_innovation_duplicates(
     # Step 2: Construct a detailed textual context for each innovation
     # This includes: name, description, developers, and relationship-based context
     # Step 2: 为每个 Innovation 构建一个文本上下文（包含名称、描述、开发组织、其他关系说明）
-    global innovation_features
-    innovation_features.clear()
+    innovation_features = {}
+
 
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row["source_id"]
@@ -1039,18 +1037,29 @@ def resolve_innovation_duplicates(
     
     # Step 6: Upload canonical embeddings to Azure AI Search
     if vector_store is not None:
-        print("Uploading embeddings to Azure AI Search...")
+
+        uploaded_id_path = "./uploaded_ids.json"
+        if os.path.exists(uploaded_id_path):
+            with open(uploaded_id_path, "r") as f:
+                uploaded_ids = set(json.load(f))
+        else:
+            uploaded_ids = set()
+        
+        to_be_upload_ids = set()
+        new_uploaded_ids = set()
 
         text_embeddings = []
         contents = []
         # print(clusters.values())
 
         for id, emb in embeddings.items():
-            if id in innovation_features:
+            if id in innovation_features and id not in uploaded_ids \
+                    and id not in to_be_upload_ids:
                 text_embeddings.append((id, emb))
                 contents.append(innovation_features[id])
+                to_be_upload_ids.add(id)
             else:
-                print(f"[警告] {id} 不在 innovation_features 中，跳过")
+                print(f"[警告] {id} 被跳过")
 
         # 1000 时有 error_map 的bug
         batch_size = 500
@@ -1072,6 +1081,10 @@ def resolve_innovation_duplicates(
                     text_embeddings=batch_text_embeddings,
                     metadatas=metadatas
                 )
+
+                for id,_ in batch_text_embeddings:
+                    new_uploaded_ids.add(id)
+
                 print(f"Successfully uploaded batch {i + 1}/{total_batches}")
             # Batch 失败就一个一个试
             except Exception as e:
@@ -1082,8 +1095,15 @@ def resolve_innovation_duplicates(
                             text_embeddings=[embd],
                             metadatas=[{'source':innovation_features[embd[0]]}]
                         )
+                        new_uploaded_ids.add(embd[0])
+
                 except Exception as e:
                     print(f"Error uploading embedding: {e}")
+
+        # 所有上传结束后，更新本地记录
+        uploaded_ids.update(new_uploaded_ids)
+        with open(uploaded_id_path, "w") as f:
+            json.dump(sorted(list(uploaded_ids)), f, indent=2)
 
         print("Uploaded embeddings to Azure AI Search...")
         
@@ -1448,8 +1468,8 @@ def main():
     )
 
     # Test chat_bot.
-    answer = chat_bot("nuclear")
-    print(answer)
+    # answer = chat_bot("nuclear")
+    # print(answer)
     
     # Step 3: Resolve innovation duplicates
     canonical_mapping = resolve_innovation_duplicates(
