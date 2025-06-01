@@ -2,10 +2,11 @@
 
 Youtube Link: https://www.youtube.com/watch?v=yKNr22bu9Yc
 
+![](https://www.youtube.com/watch?v=yKNr22bu9Yc) 
+
 <video width="320" height="240" controls>
   <source src="https://www.youtube.com/watch?v=yKNr22bu9Yc" type="video/mp4">
 </video>
-
 This project addresses the challenge of identifying and consolidating innovation disclosures from VTT's collaboration partnerships.
 
 ## Challenge Description
@@ -75,6 +76,11 @@ Innovation-Duplication/
 2. Place your API key configuration in `data/keys/azure_config.json` with the following structure:
    ```json
    {
+   "azure-ai-search": {
+      "api_key": "YOUR_SEARCH_KEY",
+      "azure_endpoint": "https://your-search.search.windows.net",
+      "index_name": "innovation-index"
+   },
      "gpt-4o-mini": {
        "api_key": "YOUR_API_KEY",
        "api_base": "YOUR_AZURE_ENDPOINT",
@@ -112,6 +118,11 @@ Innovation-Duplication/
 2. Execute the innovation resolution solution:
    ```
    python innovation_resolution.py
+   ```
+
+3. Start Streamlit app locally:
+   ```
+   streamlit run app.py
    ```
 
 The script will perform the following steps:
@@ -159,35 +170,6 @@ python innovation_resolution.py --skip-eval
 
 # Use automatic labeling for evaluation (no manual labeling required)
 python innovation_resolution.py --auto-label
-```
-
-### Command Line Options
-
-The script now supports various command line options for configuring the caching system:
-
-```
-python innovation_resolution.py [options]
-
-Options:
-  --cache-type TYPE      Cache type to use (default: embedding)
-  --cache-backend TYPE   Cache backend type (json or memory, default: json)
-  --cache-path PATH      Path to cache file (default: ./embedding_vectors.json)
-  --no-cache             Disable caching
-```
-
-Examples:
-```bash
-# Use default configuration (JSON file caching)
-python innovation_resolution.py
-
-# Use in-memory caching (faster but not persistent)
-python innovation_resolution.py --cache-backend memory
-
-# Disable caching (regenerate embeddings each time)
-python innovation_resolution.py --no-cache
-
-# Custom cache file location
-python innovation_resolution.py --cache-path "./data/cache/embeddings.json"
 ```
 
 ## Solution Details
@@ -370,5 +352,5 @@ See `requirements.txt` for the complete list.
 
 ## Contributors
 
-This project is part of the AaltoAI Hackathon in collaboration with VTT and DataCrunch.
+This project is part of the AaltoAI Hackathon in collaboration with VTT.
 
