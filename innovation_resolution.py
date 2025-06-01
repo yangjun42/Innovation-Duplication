@@ -682,55 +682,106 @@ def load_and_combine_data() -> Tuple[pd.DataFrame, List[Dict], List[Dict]]:
 
 
 def initialize_openai_client():
-    """
-    Initialize the OpenAI client using the API keys.
-    
-    Returns:
-        llm, embedding model
-    """
+    """初始化OpenAI客户端"""
     import json
-    # ✅ 优先从环境变量读取路径
-    config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
-
-    if not os.path.exists(config_path):
-        print(f"API configuration file not found at {config_path}")
-        print("Please obtain API keys and create the configuration file as described in the README.md")
-        return None, None
     
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-    dim = 3072
-    model_name = 'gpt-4.1-mini'
-    if model_name in config:
-        llm = AzureChatOpenAI(
-            api_key=config[model_name]['api_key'],
-            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
-            azure_deployment=config[model_name]['deployment'],
-            api_version=config[model_name]['api_version'],
-            temperature=0
-        )
+    # 打印调试信息
+    print("="*50)
+    print("初始化OpenAI客户端...")
+    print(f"当前工作目录: {os.getcwd()}")
+    print(f"DATA_DIR: {DATA_DIR}")
+    
+    try:
+        # 尝试从streamlit secrets获取配置
+        import streamlit as st
         
-        embedding_model = AzureOpenAIEmbeddings(
-            api_key=config[model_name]['api_key'],
-            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
-            azure_deployment=config[model_name]['emb_deployment'],
-            api_version=config[model_name]['api_version'],
-            dimensions=dim
-        )
-
-        vector_store_name = 'azure-ai-search'
-
-        vector_store = AzureSearch(
-            azure_search_endpoint = config[vector_store_name]['azure_endpoint'],
-            azure_search_key = config[vector_store_name]['api_key'],
-            index_name = config[vector_store_name]['index_name'],
-            embedding_function= embedding_model
-        )
+        print("尝试从st.secrets获取配置...")
+        if hasattr(st, 'secrets') and st.secrets:
+            print(f"st.secrets可用，包含以下键: {list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else 'No keys method'}")
+            if 'default_model' in st.secrets:
+                print(f"默认模型信息: {st.secrets['default_model']}")
+            if 'gpt-4.1-mini' in st.secrets:
+                print(f"模型配置包含键: {list(st.secrets['gpt-4.1-mini'].keys()) if hasattr(st.secrets['gpt-4.1-mini'], 'keys') else 'No keys method'}")
+            if 'azure-ai-search' in st.secrets:
+                print(f"向量存储配置包含键: {list(st.secrets['azure-ai-search'].keys()) if hasattr(st.secrets['azure-ai-search'], 'keys') else 'No keys method'}")
+        else:
+            print("st.secrets不可用")
         
-        return llm, embedding_model, vector_store
-    else:
-        print(f"Model {model_name} configuration not found")
-        return None, None
+        config = st.secrets
+        
+        # 如果streamlit secrets不可用，尝试从文件读取
+        if not config:
+            print("st.secrets为空，尝试从文件读取...")
+            # ✅ 优先从环境变量读取路径
+            config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
+            print(f"尝试读取配置文件: {config_path}")
+            
+            if not os.path.exists(config_path):
+                print(f"API配置文件未找到: {config_path}")
+                print("请获取API密钥并按照README.md中的说明创建配置文件")
+                return None, None, None
+            
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            print(f"从文件加载配置成功，包含键: {list(config.keys())}")
+        
+        dim = 3072
+        # 如果使用streamlit secrets，需要适配其结构
+        if hasattr(config, 'get'):
+            # 从st.secrets中获取
+            model_name = config.get('default_model', {}).get('name', 'gpt-4.1-mini')
+            model_config = config.get(model_name, {})
+            vector_store_name = 'azure-ai-search'
+            vector_store_config = config.get(vector_store_name, {})
+        else:
+            # 从JSON配置中获取
+            model_name = 'gpt-4.1-mini'
+            model_config = config.get(model_name, {})
+            vector_store_name = 'azure-ai-search'
+            vector_store_config = config.get(vector_store_name, {})
+        
+        if model_config:
+            api_key = model_config.get('api_key')
+            api_base = model_config.get('api_base', '')
+            # 移除URL部分（如果存在）
+            base_endpoint = api_base.split('/openai')[0] if '/openai' in api_base else api_base
+            
+            llm = AzureChatOpenAI(
+                api_key=api_key,
+                azure_endpoint=base_endpoint,
+                azure_deployment=model_config.get('deployment'),
+                api_version=model_config.get('api_version'),
+                temperature=0
+            )
+            
+            embedding_model = AzureOpenAIEmbeddings(
+                api_key=api_key,
+                azure_endpoint=base_endpoint,
+                azure_deployment=model_config.get('emb_deployment'),
+                api_version=model_config.get('api_version'),
+                dimensions=dim
+            )
+            
+            if vector_store_config:
+                vector_store = AzureSearch(
+                    azure_search_endpoint = vector_store_config.get('azure_endpoint'),
+                    azure_search_key = vector_store_config.get('api_key'),
+                    index_name = vector_store_config.get('index_name'),
+                    embedding_function = embedding_model
+                )
+                
+                return llm, embedding_model, vector_store
+            else:
+                print(f"Vector store {vector_store_name} configuration not found")
+                return llm, embedding_model, None
+        else:
+            print(f"Model {model_name} configuration not found")
+            return None, None, None
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None
 
 
 def get_embedding(text: str, model) -> np.ndarray:
@@ -1376,14 +1427,14 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
 
 def chat_bot(query:str) -> str:
 
-    llm, _ , vector_store = initialize_openai_client()
+    llm, embedding_model, vector_store = initialize_openai_client()
 
     
     if llm is None:
-        print("Warning: Language model not available. Some features may be limited.")
+        return "Error: Language model not available. Please check your configuration."
     
     if vector_store is None:
-        print("Warning: AI search unavailable.")
+        return "Error: AI search unavailable. Please check your configuration."
     
 
     # Set up Chatbot
@@ -1400,12 +1451,19 @@ def chat_bot(query:str) -> str:
 
     chatbot_llm = chatbot_prompt | llm
 
-    results = vector_store.vector_search(query, k=3)
+    try:
+        results = vector_store.vector_search(query, k=3)
+        context = "\n".join([res.metadata['source'] for res in results])
+    except Exception as e:
+        print(f"Error during vector search: {str(e)}")
+        context = "No relevant information found."
 
-    context = "\n".join([res.metadata['source'] for res in results])
-
-    llm_result = chatbot_llm.invoke({"context":context, "question":query})
-    answer = llm_result.content
+    try:
+        llm_result = chatbot_llm.invoke({"context":context, "question":query})
+        answer = llm_result.content
+    except Exception as e:
+        print(f"Error generating answer: {str(e)}")
+        answer = f"Sorry, I couldn't process your question. Error: {str(e)}"
     
     return answer
 
