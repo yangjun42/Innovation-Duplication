@@ -505,6 +505,20 @@ def extract_relationships_from_document(doc, pred_relations: List[Dict] = None) 
                 else:
                     node_english_id[node.id] = node.id
         
+        with open("data/entity_glossary/entity_glossary.json") as f:
+        glossary = json.load(f)
+        for _, row in relationships:
+        org_id = row['target_id']
+        if org_id not in consolidated_graph['organizations']:
+            # 优先查 glossary，fallback 用 org_id
+            name = glossary.get(org_id, {}).get('name', org_id)
+            desc = row['target_description']
+            consolidated_graph['organizations'][org_id] = {
+                'id': org_id,
+                'name': name,
+                'description': desc
+            }
+
         for rel in doc.relationships:
             # 只包含DEVELOPED_BY和COLLABORATION关系
             if rel.type in ["DEVELOPED_BY", "COLLABORATION"]:
