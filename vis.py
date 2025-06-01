@@ -16,6 +16,7 @@ import numpy as np
 import seaborn as sns
 import networkx as nx
 import plotly.graph_objects as go
+import json
 
 RESULTS_DIR = "results"
 
@@ -29,6 +30,69 @@ COLOR_PALETTE = {
 }
 EDGE_STYLE = {"DEVELOPED_BY": "solid", "COLLABORATION": "dashed"}
 
+# ==============================================================================
+# 新增：export_graph_to_json 函数
+# ==============================================================================
+def export_graph_to_json(G: nx.Graph, pos: dict, output_path: str):
+    """
+    将 NetworkX 图 G 以及布局 pos（node->坐标 (x,y) 或 (x,y,z)）导出成 JSON 文件。
+
+    JSON 结构示例：
+    {
+      "nodes": [
+         {"id": "Inno_123", "type": "Innovation", "x": 0.123, "y": -0.456, "z": null},
+         ...
+      ],
+      "edges": [
+         {"source": "Inno_123", "target": "OrgA", "type": "DEVELOPED_BY"},
+         ...
+      ]
+    }
+
+    Args:
+        G           (nx.Graph): 已经添加了节点和边的 NetworkX 图
+        pos         (dict):      布局字典，键=node_id，值=np.array([x,y]) 或 np.array([x,y,z])
+        output_path (str):       JSON 文件保存路径
+    """
+    data = {"nodes": [], "edges": []}
+
+    # 导出节点列表
+    for node_id, attrs in G.nodes(data=True):
+        coords = pos[node_id]
+        # 如果是二维布局，coords 长度为 2，否则为 3
+        if len(coords) == 2:
+            x, y = float(coords[0]), float(coords[1])
+            z = None
+        else:
+            x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
+        data["nodes"].append({
+            "id": str(node_id),
+            "type": attrs.get("type", "Unknown"),
+            "x": x,
+            "y": y,
+            "z": z
+        })
+
+    # 导出边列表
+    for u, v, attrs in G.edges(data=True):
+        data["edges"].append({
+            "source": str(u),
+            "target": str(v),
+            "type": attrs.get("type", "")
+        })
+
+    # 确保保存目录存在
+    dirname = os.path.dirname(output_path)
+    if dirname and not os.path.exists(dirname):
+        os.makedirs(dirname)
+
+    # 将 data 字典写入 JSON 文件
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f">>> Graph exported to JSON: {output_path}")
+
+
+
 def get_red_blue_palette(n_colors):
     # 红 -> 灰 -> 蓝
     from matplotlib.colors import LinearSegmentedColormap
@@ -36,9 +100,9 @@ def get_red_blue_palette(n_colors):
     cmap = LinearSegmentedColormap.from_list("redgrayblue", colors, N=n_colors)
     return [cmap(i/(n_colors-1)) for i in range(n_colors)]
 
-def visualize_network_tufte(analysis_results: dict):
+def visualize_network_tufte(analysis_results: dict, highlight_coords: list = None):
     visualize_network_tufte_2D(analysis_results)
-    visualize_network_tufte_3D(analysis_results)
+    visualize_network_tufte_3D(analysis_results, highlight_coords)
     visualize_network_tufte_bar(analysis_results)
 
 def visualize_network_tufte_2D(analysis_results: dict):
@@ -60,6 +124,11 @@ def visualize_network_tufte_2D(analysis_results: dict):
     ax.axis('off')
 
     pos = nx.spring_layout(H, k=0.25, seed=42)
+
+    # ===== 新增：导出 2D 节点坐标与边信息到 JSON 文件 =====
+    json2d_path = os.path.join(RESULTS_DIR, "node_positions_tufte_2d.json")
+    export_graph_to_json(H, pos, json2d_path)
+    # =========================================================
 
     # 节点样式
     node_colors, node_sizes = [], []
@@ -116,28 +185,35 @@ def visualize_network_tufte_2D(analysis_results: dict):
     plt.close()
     print("2D network visualization saved: innovation_network_tufte_2D.png")
 
-def visualize_network_tufte_3D(analysis_results: dict):
+def visualize_network_tufte_3D(analysis_results: dict, highlight_coords: list = None, tol: float = 1e-6):
     """
-    Tufte 风格的 3D 交互网络图，可视化最核心节点（如只展示前 50 节点，避免过度拥挤）：
-      - 使用 Plotly 3D Scatter
-      - 仅标记最重要的局部，让评委专注而不过度分散注意力
+    Tufte 风格的 3D 交互网络图，可视化最核心节点（只展示前 50 度最高节点的子图）。
+    如果传入 highlight_coords，则这些坐标对应的节点会以红色并放大显示。
+    
     Args:
-        analysis_results: analyze_innovation_network() 返回的字典
+        analysis_results: 来自 analyze_innovation_network() 的结果 dict
+        highlight_coords: None 或者一个列表，列表内元素形如 (x, y, z)，表示要高亮的节点坐标。
+        tol:   坐标比较的小容差，判断是否“相等”时用。
     """
     G: nx.Graph = analysis_results['graph']
 
-    # 如果网络节点超多，可先提取前 50 或前若干度数最高节点的子图
-    if len(G.nodes) > 100:
-        # 以 degree 排序，取前 50
-        top_nodes = sorted(G.nodes(), key=lambda n: G.degree(n), reverse=True)[:50]
-        subG = G.subgraph(top_nodes).copy()
-    else:
-        subG = G
+    # 如果节点过多，只取度数 Top-50 构成子图
+    # if len(G.nodes) > 100:
+    #     top_nodes = sorted(G.nodes(), key=lambda n: G.degree(n), reverse=True)[:50]
+    #     subG = G.subgraph(top_nodes).copy()
+    # else:
+    #     subG = G
+    subG = G
 
-    # 1. 3D 布局（固定 seed）
+    # 1. 3D 布局
     pos_3d = nx.spring_layout(subG, dim=3, k=0.15, iterations=50, seed=42)
 
-    # 2. 提取坐标与属性
+    # === 可选：把 3D 坐标先导出到 JSON，方便调试或后续查询 ===
+    json3d_path = os.path.join(RESULTS_DIR, "node_positions_tufte_3d.json")
+    export_graph_to_json(subG, pos_3d, json3d_path)
+    # ================================================================
+
+    # 2. 准备节点坐标列表
     x_nodes = [pos_3d[n][0] for n in subG.nodes()]
     y_nodes = [pos_3d[n][1] for n in subG.nodes()]
     z_nodes = [pos_3d[n][2] for n in subG.nodes()]
@@ -145,33 +221,53 @@ def visualize_network_tufte_3D(analysis_results: dict):
     node_types = nx.get_node_attributes(subG, 'type')
     sources_counts = nx.get_node_attributes(subG, 'sources')
 
+    # 3. 如果需要高亮：先把 highlight_coords 转成一个集合（为浮点比较），
+    #    用 tol 做“接近”判定。这里我们提前把 highlight_coords 中的点放到列表里
+    highlight_ids = set()
+    if highlight_coords is not None:
+        for n in subG.nodes():
+            xx, yy, zz = pos_3d[n]
+            for (hx, hy, hz) in highlight_coords:
+                if abs(xx - hx) < tol and abs(yy - hy) < tol and abs(zz - hz) < tol:
+                    highlight_ids.add(n)
+                    break
+
+    # 4. 根据节点类型决策默认颜色和大小，再对高亮节点做覆盖
     node_colors = []
     node_sizes = []
     node_labels = []
     for n in subG.nodes():
         ntype = node_types.get(n, 'Unknown')
+        # 默认颜色/尺寸
         if ntype == 'Innovation':
             cnt = sources_counts.get(n, 1)
-            node_sizes.append(5 + min(cnt, 10) * 2)
-            node_colors.append(COLOR_PALETTE['Innovation'])
+            size = 5 + min(cnt, 10) * 2
+            color = COLOR_PALETTE['Innovation']
         elif ntype == 'Organization':
-            node_sizes.append(5)
-            node_colors.append(COLOR_PALETTE['Organization'])
+            size = 5
+            color = COLOR_PALETTE['Organization']
         else:
-            node_sizes.append(5)
-            node_colors.append(COLOR_PALETTE['Unknown'])
+            size = 5
+            color = COLOR_PALETTE['Unknown']
 
-        # 仅最重要节点显示标签
+        # 如果该节点在 highlight_ids 里，就改用红色并放大两倍
+        if n in highlight_ids:
+            color = "#e62400"          # 纯红高亮
+            size = size * 2.5          # 放大
+        node_colors.append(color)
+        node_sizes.append(size)
+
+        # 只给最关键节点打标签
         if n in [nd for nd, _ in analysis_results['key_innovations'][:3]] \
            or n in [nd for nd, _ in analysis_results['key_orgs'][:3]]:
-            label = (subG.nodes[n].get('name') 
-                     if subG.nodes[n].get('type') == 'Organization' 
+            label = (subG.nodes[n].get('name')
+                     if subG.nodes[n].get('type') == 'Organization'
                      else subG.nodes[n].get('names', n))
         else:
             label = ""
         node_labels.append(label)
 
-    # 3. 边 trace（按类型分组）
+    # 5. 准备边的 trace（按类型分组）
     edge_traces = []
     edge_types = {
         'DEVELOPED_BY': COLOR_PALETTE['Edge_Developed'],
@@ -195,7 +291,7 @@ def visualize_network_tufte_3D(analysis_results: dict):
                 )
             )
 
-    # 4. 节点 trace
+    # 6. 最后画节点 trace
     hover_texts = [
         f"{subG.nodes[n].get('name', subG.nodes[n].get('names', n))}<br>Type: {subG.nodes[n].get('type','Unknown')}"
         for n in subG.nodes()
@@ -216,7 +312,7 @@ def visualize_network_tufte_3D(analysis_results: dict):
         name="Nodes"
     )
 
-    # 5. 组合并渲染
+    # 7. 组合并输出 HTML
     fig = go.Figure(data=[nodes_trace] + edge_traces)
     fig.update_layout(
         title='VTT Innovation Network (3D Subgraph)',
@@ -230,11 +326,12 @@ def visualize_network_tufte_3D(analysis_results: dict):
         legend=dict(title_text='Relation Types', x=0, y=1, bgcolor='rgba(255,255,255,0.5)')
     )
 
-    # 6. 保存交互 HTML 和静态图
-    fig.write_html(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.html'))
-    fig.write_image(os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.png'),
-                    width=1200, height=900)
-    print("3D network visualization saved: innovation_network_tufte_3D.html & .png")
+    # 输出交互式 HTML
+    html_path = os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.html')
+    png_path  = os.path.join(RESULTS_DIR, 'innovation_network_tufte_3D.png')
+    fig.write_html(html_path)
+    fig.write_image(png_path, width=1200, height=900)
+    print("3D network visualization saved:", html_path, "&", png_path)
 
 def visualize_network_tufte_bar(analysis_results: dict):
     stats = analysis_results['stats']
