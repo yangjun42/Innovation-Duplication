@@ -1332,7 +1332,7 @@ def main():
     analysis_results = analyze_innovation_network(consolidated_graph)
     
     # Step 6: Visualize network
-    visualize_network_tufte(analysis_results)
+    visualize_network_tufte(analysis_results, [(0.018787509602611465,0.5110956108712571,-0.08761328149720085)])
     
     # Save predicted entities and relationships for evaluation
     os.makedirs("evaluation", exist_ok=True)
