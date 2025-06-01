@@ -1467,9 +1467,7 @@ def main():
         cache_config=cache_config
     )
 
-    # Test chat_bot.
-    # answer = chat_bot("nuclear")
-    # print(answer)
+
     
     # Step 3: Resolve innovation duplicates
     canonical_mapping = resolve_innovation_duplicates(
