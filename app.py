@@ -52,6 +52,7 @@ st.markdown("""
 - 🌐 **Interactive resultsizations** of innovation networks in both 2D and 3D.
 - 🌟 **Statistical dashboards** that summarize key patterns and contributors.
 - 🧠 A **semantic assistant** that helps you navigate the graph via natural language queries.
+- 🧪 A Clustering Method Explorer for different clustering method metrics
 
 #### Scroll down to explore each module below:
 """)
@@ -164,7 +165,10 @@ with col1:
 
 with st.sidebar:
     st.header("💬 Ask the AI Assistant")
-    user_input = st.chat_input("Ask something...Who developed nuclear energy innovations?, Which organizations developed the most innovations?:")
+    st.markdown("""
+        💬 free-form questions like : Who developed nuclear energy innovations?, Which organizations developed the most innovations?
+        """)
+    user_input = st.chat_input("Ask something...")
 
     if user_input:
         with st.chat_message("user"):
@@ -174,3 +178,66 @@ with st.sidebar:
             with st.spinner("Thinking..."):
                 response = chat_bot(user_input)
                 st.markdown(response)
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ------------------------------
+# Clustering Method Explorer
+# ------------------------------
+st.divider()
+st.header("🧪 Clustering Method Explorer")
+
+cluster_data = {
+    "Threshold-based (0.85)": {"clusters": 1911, "edges": 12502, "note": "Baseline"},
+    "HDBSCAN": {"clusters": 1735, "edges": 12341, "note": "Aggressive deduplication"},
+    "KMeans (n=1911)": {"clusters": 1911, "edges": 12544, "note": "Balanced"},
+    "Agglomerative (n=1911)": {"clusters": 1911, "edges": 12544, "note": "Similar to KMeans"},
+    "Spectral (n=1911, k=15)": {"clusters": 1911, "edges": 12612, "note": "Highest edge count (dense)"}
+}
+
+
+method = st.selectbox("🔘 Select a clustering method", list(cluster_data.keys()), index=0)
+selected = cluster_data[method]
+
+# 卡片样式展示
+with st.container():
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("####  Clusters")
+        st.metric(label="Innovation Clusters", value=selected["clusters"])
+
+    with col2:
+        st.markdown("####  Edges")
+        st.metric(label="Edges in Graph", value=selected["edges"])
+
+    with col3:
+        st.markdown("####  Notes")
+        st.markdown(f"<div style='padding: 10px; border-radius: 8px; background-color: #f0f2f6;'>{selected['note']}</div>", unsafe_allow_html=True)
+
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import numpy as np
+
+# 准备数据
+methods = list(cluster_data.keys())
+edges = [v["edges"] for v in cluster_data.values()]
+
+# 🎨 使用彩虹渐变色（可选其他 colormap，如 viridis, plasma 等）
+cmap = cm.get_cmap('rainbow')
+colors = [cmap(i / len(methods)) for i in range(len(methods))]
+
+# 📊 绘图
+fig, ax = plt.subplots(figsize=(8, 4))
+bars = ax.bar(methods, edges, color=colors)
+
+# 设置 Y 轴起始值为 10000
+ax.set_ylim(12000, max(edges) + 1000)
+ax.set_ylabel("Edge Count")
+ax.set_title("Edge Count Comparison Across Clustering Methods")
+
+# X轴文字旋转
+plt.xticks(rotation=15, ha='right')
+st.pyplot(fig)
