@@ -1041,21 +1041,36 @@ def resolve_innovation_duplicates(
     if vector_store is not None:
         print("Uploading embeddings to Azure AI Search...")
 
-        text_embeddings = [(id, embeddings[id]) for id in clusters.keys() if id in embeddings]
+        text_embeddings = []
+        contents = []
+        # print(clusters.values())
+
+        for id, emb in embeddings.items():
+            if id in innovation_features:
+                text_embeddings.append((id, emb))
+                contents.append(innovation_features[id])
+            else:
+                print(f"[警告] {id} 不在 innovation_features 中，跳过")
 
         # 1000 时有 error_map 的bug
         batch_size = 500
         total_batches = math.ceil(len(text_embeddings) / batch_size)
+        print(f"将上传 {len(text_embeddings)} 条嵌入向量，总共 {total_batches} 批")
 
+
+        # 将 id 对应的 description 装入 metadata，不需要再使用 global innovation_features
         for i in range(total_batches):
             start_index = i * batch_size
             end_index = start_index + batch_size
 
             batch_text_embeddings = text_embeddings[start_index:end_index]
+            batch_contents = contents[start_index:end_index]
+            metadatas = [{'source': content} for content in batch_contents]
 
             try:
                 vector_store.add_embeddings(
-                    text_embeddings=batch_text_embeddings
+                    text_embeddings=batch_text_embeddings,
+                    metadatas=metadatas
                 )
                 print(f"Successfully uploaded batch {i + 1}/{total_batches}")
             # Batch 失败就一个一个试
@@ -1064,7 +1079,8 @@ def resolve_innovation_duplicates(
                     print(f"Error batch")
                     for embd in batch_text_embeddings:
                         vector_store.add_embeddings(
-                            text_embeddings=[embd]
+                            text_embeddings=[embd],
+                            metadatas=[{'source':innovation_features[embd[0]]}]
                         )
                 except Exception as e:
                     print(f"Error uploading embedding: {e}")
@@ -1339,7 +1355,6 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
 
 
 def chat_bot(query:str) -> str:
-    global innovation_features
 
     llm, _ , vector_store = initialize_openai_client()
 
@@ -1367,7 +1382,7 @@ def chat_bot(query:str) -> str:
 
     results = vector_store.vector_search(query, k=3)
 
-    context = "\n".join([innovation_features[doc.page_content] for doc in results])
+    context = "\n".join([res.metadata['source'] for res in results])
 
     llm_result = chatbot_llm.invoke({"context":context, "question":query})
     answer = llm_result.content
