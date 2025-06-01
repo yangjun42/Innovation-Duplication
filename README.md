@@ -1,6 +1,10 @@
 # VTT Innovation Resolution
 
-Youtube Link:
+Youtube Link: https://www.youtube.com/watch?v=yKNr22bu9Yc
+
+<video width="320" height="240" controls>
+  <source src="https://www.youtube.com/watch?v=yKNr22bu9Yc" type="video/mp4">
+</video>
 
 This project addresses the challenge of identifying and consolidating innovation disclosures from VTT's collaboration partnerships.
 
