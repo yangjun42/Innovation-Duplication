@@ -243,6 +243,38 @@ The solution uses semantic similarity through embeddings to identify when differ
 
 5. Duplicate innovations are mapped to a canonical innovation ID
 
+
+### Innovation Duplicate Detection & Knowledge Graph
+
+A lightweight pipeline to detect semantically duplicate innovations via embedding‐based clustering (HDBSCAN) and build a consolidated innovation–organization knowledge graph.
+
+1. **HDBSCAN Overview**
+HDBSCAN (Hierarchical Density‐Based Spatial Clustering of Applications with Noise)
+	-	No preset k: Automatically determines cluster count.
+	-	Variable‐density & arbitrary‐shape clusters: Handles small, unevenly sized duplicate groups.
+	-	Noise detection: Unique (non‐duplicate) innovations remain unclustered.
+	-	Membership probability: Each point obtains a “strength” score for belonging to its cluster.
+	-	Why HDBSCAN works here
+	-	Duplicate innovation records often form small, dense pockets in 1536-dimensional text‐embedding space.
+	-	HDBSCAN isolates outliers (non-duplicates) without forcing them into a cluster.
+	-	We normalize embeddings (cosine → Euclidean) and tune min_cluster_size=2 by default.
+
+2. **Experience result**
+  - Total nodes from all Grah: 4076
+  - Total edges: 9287
+  - Innovations: 1735(HDBSCAN) to 2000(setting needed for some clusters way)
+  - Organizations: 2490
+
+Baseline: Raw Threshold Clustering (Connected Components): Created knowledge graph with 1911 innovations, 2490 organizations, and 12502 relationships
+HDBSCAN (min_cluster_size=2, cosine metric): Created knowledge graph with 1735 innovations, 2490 organizations, and 12341 relationships
+K-Means (k = 1911): Created knowledge graph with 1911 innovations, 2490 organizations, and 12544 relationships
+Agglomerative Hierarchical Clustering (n_clusters = 1911): Created knowledge graph with 1911 innovations, 2490 organizations, and 12544 relationships
+Spectral Clustering (n_clusters = 1911, n_neighbors = 15): Created knowledge graph with 1911 innovations, 2490 organizations, and 12612 relationships
+
+3. **API utils**
+ALL the cluster we try have been packaged into API form, which includes HDBSCAN, K-Means, Agglomerative Hierarchical Clustering, Spectral Clustering, Faiss‐Based Nearest Neighbors + Graph Clustering and Pure Graph Clustering (Threshold + Connected Components / k-Core). Using Pure Graph Clustering to get the initial cluster numbers for all the cluster methods that needed to be preinputed first.
+ 
+
 ### Caching System
 
 The solution uses a modular caching system for embeddings to improve performance:
