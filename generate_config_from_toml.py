@@ -38,6 +38,8 @@ if "INPUT" in secrets:
     print("✅ Included [INPUT] block")
 
 # --- Write final merged config ---
+# Create directory if it doesn't exist
+os.makedirs(os.path.dirname(UNIFIED_CONFIG_PATH), exist_ok=True)
 with open(UNIFIED_CONFIG_PATH, "w") as f:
     json.dump(output_config, f, indent=2)
 
