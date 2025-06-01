@@ -33,6 +33,8 @@ data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 keys_dir = os.path.join(data_dir, "keys")
 os.makedirs(keys_dir, exist_ok=True)
 
+
+
 from innovation_resolution import chat_bot
 
 # ----------------------------
@@ -56,6 +58,14 @@ st.markdown("""
 
 #### Scroll down to explore each module below:
 """)
+
+from PIL import Image
+import os
+
+@st.cache_data
+def load_image(path):
+    return Image.open(path)
+
 #wanchengle
 # --- Display HTML with Expand Button ---
 st.header("🌐 Network Graph Visualizations")
@@ -106,10 +116,12 @@ These charts summarize statistical patterns in the innovation network:
 - Top contributing organizations
 """)
 
+
 img_path = "results/innovation_network_tufte_2D.png"
 if os.path.exists(img_path):
+    img = load_image(img_path)
     st.subheader("2D Network Snapshot")
-    st.image(img_path, use_container_width=True)
+    st.image(img, use_container_width=True)
 else:
     st.warning("2D PNG image not found.")
 
@@ -123,7 +135,8 @@ with col2:
     st.subheader("Key Innovation Statistics")
     img_stat = "results/innovation_stats_tufte.png"
     if os.path.exists(img_stat):
-        st.image(img_stat, use_container_width=True)
+        img = load_image(img_stat)
+        st.image(img, use_container_width=True)
         st.markdown("""
         Summary statistics highlighting:
         - Total innovations in the dataset
@@ -137,7 +150,8 @@ with col1:
     st.subheader("Top Contributing Organizations")
     img_top_orgs = "results/top_organizations.png"
     if os.path.exists(img_top_orgs):
-        st.image(img_top_orgs, use_container_width=True)
+        img = load_image(img_top_orgs)
+        st.image(img, use_container_width=True)
         st.markdown("""
         - Organizations ranked by the number of innovations they have contributed to.
         - A great way to identify major innovation players in the ecosystem.
