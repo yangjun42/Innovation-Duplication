@@ -1,5 +1,7 @@
 # VTT Innovation Resolution
 
+Youtube Link:
+
 This project addresses the challenge of identifying and consolidating innovation disclosures from VTT's collaboration partnerships.
 
 ## Challenge Description
