@@ -906,65 +906,62 @@ def resolve_innovation_duplicates(
     innovation_ids = [item[0] for item in embedding_items]
     embedding_matrix = np.vstack([item[1] for item in embedding_items])  # shape = (N, D)
 
-    # Step 4: 根据用户指定的 method，调用对应的聚类算法
     print(f"Clustering similar innovations with method='{method}'...")
     canonical_mapping: Dict[str, str] = {}
-
     method_lower = method.lower()
+
     if method_lower in {"hdbscan", "kmeans", "agglomerative", "spectral"}:
-        # -------- 1) 平面簇算法 --------
+        # -------- 1) 平面聚类算法 --------
         if method_lower == "hdbscan":
             min_cluster_size = method_kwargs.get("min_cluster_size", 2)
             metric = method_kwargs.get("metric", "cosine")
             cluster_selection_method = method_kwargs.get("cluster_selection_method", "eom")
-            labels = cluster_hdbscan(
+            # 直接得到 { canonical_id: [member_id,…], … }
+            clusters_dict = cluster_hdbscan(
                 embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
                 min_cluster_size=min_cluster_size,
                 metric=metric,
                 cluster_selection_method=cluster_selection_method
             )
+
         elif method_lower == "kmeans":
             n_clusters = method_kwargs.get("n_clusters", 450)
             random_state = method_kwargs.get("random_state", 42)
-            labels = cluster_kmeans(
+            clusters_dict = cluster_kmeans(
                 embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
                 n_clusters=n_clusters,
                 random_state=random_state
             )
+
         elif method_lower == "agglomerative":
             n_clusters = method_kwargs.get("n_clusters", 450)
             affinity = method_kwargs.get("affinity", "cosine")
             linkage = method_kwargs.get("linkage", "average")
-            labels = cluster_agglomerative(
+            clusters_dict = cluster_agglomerative(
                 embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
                 n_clusters=n_clusters,
                 affinity=affinity,
                 linkage=linkage
             )
-        else:  # spectral
+
+        else:  # method_lower == "spectral"
             n_clusters = method_kwargs.get("n_clusters", 450)
             affinity = method_kwargs.get("affinity", "nearest_neighbors")
             n_neighbors = method_kwargs.get("n_neighbors", 10)
-            labels = cluster_spectral(
+            clusters_dict = cluster_spectral(
                 embedding_matrix=embedding_matrix,
+                ids=innovation_ids,
                 n_clusters=n_clusters,
                 affinity=affinity,
                 n_neighbors=n_neighbors
             )
 
-        # 把 label -> cluster 成员映射出来
-        clusters: Dict[int, List[str]] = {}
-        for idx, lab in enumerate(labels):
-            if lab == -1:
-                # HDBSCAN 的 -1 (噪声) 单独成一簇
-                key = f"noise_{innovation_ids[idx]}"
-                clusters.setdefault(key, []).append(innovation_ids[idx])
-            else:
-                clusters.setdefault(int(lab), []).append(innovation_ids[idx])
-
-        # 把每个簇里的第一个成员设为 canonical_id
-        for lab_key, members in clusters.items():
-            canonical_id = members[0]
+        # 下面把 clusters_dict 中的映射展开到 canonical_mapping
+        # clusters_dict: { canonical_id: [ member_id, … ], … }
+        for canonical_id, members in clusters_dict.items():
             for mid in members:
                 canonical_mapping[mid] = canonical_id
 
@@ -980,7 +977,7 @@ def resolve_innovation_duplicates(
                 similarity_threshold=sim_threshold,
                 use_cosine=use_cos
             )
-        else:  # "graph_kcore"
+        else:  # graph_kcore
             k_core = method_kwargs.get("k_core", 15)
             clusters_dict = graph_kcore_clustering(
                 embedding_matrix=embedding_matrix,
@@ -990,7 +987,11 @@ def resolve_innovation_duplicates(
                 use_cosine=use_cos
             )
 
-        # clusters_dict 已经是 { canonical_id: [member_id,...], ... }
+        # （可选：在此打印/保存 clusters_dict 做调试）
+        print("==== DEBUG: clusters_dict =====")
+        print(clusters_dict)
+        print("================================")
+
         for canonical_id, members in clusters_dict.items():
             for mid in members:
                 canonical_mapping[mid] = canonical_id

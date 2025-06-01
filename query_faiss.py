@@ -6,8 +6,8 @@ import numpy as np
 from utils.faiss_utils import load_faiss_index, search_faiss_index
 from innovation_resolution import get_embedding
 
-FAISS_INDEX_PATH = "data/faiss_index.idx"
-ID2META_PATH    = "data/id2meta.json"
+FAISS_INDEX_PATH = "data/vector-database-2-Deduplication/faiss_index.idx"
+ID2META_PATH    = "data/vector-database-2-Deduplication/id2meta.json"
 
 def main():
     # 1) 加载 Faiss 索引
