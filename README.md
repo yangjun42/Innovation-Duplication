@@ -1,3 +1,6 @@
+### ✨ About this Fork
+This is a personal continuation of the AaltoAI Hackathon 2025 project. Originally based on the AaltoAI Hackathon project (2025). This version continues development with a focus on Azure OpenAI integration and web interface.
+
 # VTT Innovation Resolution
 
 Youtube Link: https://www.youtube.com/watch?v=yKNr22bu9Yc
