@@ -7,9 +7,11 @@ venvs/
 __pycache__/
 .DS_Store
 
+.*
+!.gitignore
+
 ai/
 
-vector_store/
 
 *.json
 # *.png
