@@ -3,12 +3,13 @@ keys/
 logs/
 # results/
 venvs/
-.streamlit/
+.streamlit/secrets.toml
 __pycache__/
 .DS_Store
 
 .*
 !.gitignore
+!.streamlit/
 
 ai/
 
