@@ -7,6 +7,10 @@ venvs/
 __pycache__/
 .DS_Store
 
+ai/
+
+vector_store/
+
 *.json
 # *.png
 # *.html

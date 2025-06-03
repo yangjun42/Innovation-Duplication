@@ -34,8 +34,10 @@ from langchain_community.vectorstores.azuresearch import AzureSearch
 
 from langchain_core.documents import Document
 
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
+from azure_openai import get_openai_models, VectorStore, \
+                            CONFIG_PATH, DEFAULT_DIMS, DEFAULT_INDEX_PATH
 
 import math
 
@@ -861,6 +863,7 @@ def resolve_innovation_duplicates(
     df_relationships: pd.DataFrame, 
     model=None, 
     vector_store = None,
+    using_local_store = True,
     cache_config: Dict = None,
     method: str = "hdbscan",
     **method_kwargs) -> Dict[str, str]:
@@ -1086,8 +1089,20 @@ def resolve_innovation_duplicates(
           
     # Step 5: (deleted)
     
+    # Step 6: Store embeddings to memory and local.
+
+    if using_local_store and vector_store is not None:
+
+        embedding_matrix = np.vstack([v for k, v in embeddings.items()])
+
+        innovation_texts = [innovation_features[iid] for iid in innovation_ids]
+
+        vector_store.save_embeds_and_texts(embedding_matrix, innovation_texts)
+
+        print("Saved embeddings to local vectore store...")
+
     # Step 6: Upload canonical embeddings to Azure AI Search
-    if vector_store is not None:
+    elif vector_store is not None:
 
         uploaded_id_path = "./uploaded_ids.json"
         if os.path.exists(uploaded_id_path):
@@ -1427,14 +1442,17 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
 
 def chat_bot(query:str) -> str:
 
-    llm, embedding_model, vector_store = initialize_openai_client()
+    llm, embedding_model, vector_store, using_local_store = get_openai_models()
 
     
     if llm is None:
         return "Error: Language model not available. Please check your configuration."
     
+    if embedding_model is None:
+        return "Error: Embedding model unavailable. Please check your configuration."
+    
     if vector_store is None:
-        return "Error: AI search unavailable. Please check your configuration."
+        return "Error: Vectore store unavailable. Please check your configuration."
     
 
     # Set up Chatbot
@@ -1451,19 +1469,38 @@ def chat_bot(query:str) -> str:
 
     chatbot_llm = chatbot_prompt | llm
 
-    try:
-        results = vector_store.vector_search(query, k=3)
-        context = "\n".join([res.metadata['source'] for res in results])
-    except Exception as e:
-        print(f"Error during vector search: {str(e)}")
-        context = "No relevant information found."
+    if using_local_store:
 
-    try:
-        llm_result = chatbot_llm.invoke({"context":context, "question":query})
-        answer = llm_result.content
-    except Exception as e:
-        print(f"Error generating answer: {str(e)}")
-        answer = f"Sorry, I couldn't process your question. Error: {str(e)}"
+        try:
+            _, result_texts = vector_store.search([query], k = 5)
+            context = "\n".join(result_texts[0])
+
+        except Exception as e:
+            print(f"Error during vector search: {str(e)}")
+            context = "No relevant information found."
+
+        try:
+            llm_result = chatbot_llm.invoke({"context":context, "question":query})
+            answer = llm_result.content
+        except Exception as e:
+            print(f"Error generating answer: {str(e)}")
+            answer = f"Sorry, I couldn't process your question. Error: {str(e)}"
+
+
+    else:
+        try:
+            results = vector_store.vector_search(query, k = 5)
+            context = "\n".join([res.metadata['source'] for res in results])
+        except Exception as e:
+            print(f"Error during vector search: {str(e)}")
+            context = "No relevant information found."
+
+        try:
+            llm_result = chatbot_llm.invoke({"context":context, "question":query})
+            answer = llm_result.content
+        except Exception as e:
+            print(f"Error generating answer: {str(e)}")
+            answer = f"Sorry, I couldn't process your question. Error: {str(e)}"
     
     return answer
 
@@ -1505,7 +1542,7 @@ def main():
     
     # Step 2: Initialize OpenAI client
 
-    llm, embed_model, vector_store = initialize_openai_client()
+    llm, embed_model, vector_store, using_local_store = get_openai_models()
 
     
     if llm is None:
@@ -1522,6 +1559,7 @@ def main():
         df_relationships, 
         embed_model,
         vector_store,
+        using_local_store,
         cache_config=cache_config
     )
 

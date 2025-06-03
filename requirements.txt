@@ -26,6 +26,9 @@ langchain_community
 langchain-openai
 openai
 
+# vector store
+faiss-cpu
+
 # Development tools
 jupyter
 notebook
