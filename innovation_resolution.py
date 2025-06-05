@@ -36,8 +36,10 @@ from langchain_core.documents import Document
 
 from langchain_core.prompts import PromptTemplate
 
-from azure_openai import get_openai_models, VectorStore, \
+from azure_openai import get_openai_models, \
                             CONFIG_PATH, DEFAULT_DIMS, DEFAULT_INDEX_PATH
+
+from qdrant import VectorStore
 
 import math
 
@@ -1093,11 +1095,12 @@ def resolve_innovation_duplicates(
 
     if using_local_store and vector_store is not None:
 
-        embedding_matrix = np.vstack([v for k, v in embeddings.items()])
+        # embedding_matrix = np.vstack([v for k, v in embeddings.items()])
 
         innovation_texts = [innovation_features[iid] for iid in innovation_ids]
+        embeddings_input = [embeddings[iid] for iid in innovation_ids]
 
-        vector_store.save_embeds_and_texts(embedding_matrix, innovation_texts)
+        vector_store.load_cache(embeddings_input, innovation_texts)
 
         print("Saved embeddings to local vectore store...")
 
@@ -1472,7 +1475,7 @@ def chat_bot(query:str) -> str:
     if using_local_store:
 
         try:
-            _, result_texts = vector_store.search([query], k = 5)
+            _, result_texts = vector_store.search([query], limit = 5)
             context = "\n".join(result_texts[0])
 
         except Exception as e:

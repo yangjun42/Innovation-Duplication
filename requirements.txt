@@ -27,7 +27,7 @@ langchain-openai
 openai
 
 # vector store
-faiss-cpu
+qdrant-client
 
 # Development tools
 jupyter
