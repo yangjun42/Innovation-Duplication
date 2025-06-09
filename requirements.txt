@@ -20,9 +20,13 @@ scikit-learn
 hdbscan
 
 # OpenAI API integration
+azure-search-documents
+azure-identity
+langchain_community
 langchain-openai
 openai
 
 # Development tools
 jupyter
 notebook
+streamlit
