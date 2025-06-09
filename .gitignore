@@ -1,14 +1,15 @@
 data/
 keys/
 logs/
-results/
+# results/
 venvs/
+.streamlit/
 __pycache__/
 .DS_Store
 
 *.json
-*.png
-*.html
+# *.png
+# *.html
 *.tar
 *.tar.bz2
 *.csv

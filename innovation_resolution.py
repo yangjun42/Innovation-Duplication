@@ -39,8 +39,6 @@ from langchain.prompts import PromptTemplate
 
 import math
 
-# Global variable for descriptions retrieve.
-innovation_features = {}
 
 # Import local modules
 from innovation_utils import (
@@ -698,55 +696,106 @@ def load_and_combine_data() -> Tuple[pd.DataFrame, List[Dict], List[Dict]]:
 
 
 def initialize_openai_client():
-    """
-    Initialize the OpenAI client using the API keys.
-    
-    Returns:
-        llm, embedding model
-    """
+    """初始化OpenAI客户端"""
     import json
-    # ✅ 优先从环境变量读取路径
-    config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
-
-    if not os.path.exists(config_path):
-        print(f"API configuration file not found at {config_path}")
-        print("Please obtain API keys and create the configuration file as described in the README.md")
-        return None, None
     
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-    dim = 3072
-    model_name = 'gpt-4.1-mini'
-    if model_name in config:
-        llm = AzureChatOpenAI(
-            api_key=config[model_name]['api_key'],
-            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
-            azure_deployment=config[model_name]['deployment'],
-            api_version=config[model_name]['api_version'],
-            temperature=0
-        )
+    # 打印调试信息
+    print("="*50)
+    print("初始化OpenAI客户端...")
+    print(f"当前工作目录: {os.getcwd()}")
+    print(f"DATA_DIR: {DATA_DIR}")
+    
+    try:
+        # 尝试从streamlit secrets获取配置
+        import streamlit as st
         
-        embedding_model = AzureOpenAIEmbeddings(
-            api_key=config[model_name]['api_key'],
-            azure_endpoint=config[model_name]['api_base'].split('/openai')[0],
-            azure_deployment=config[model_name]['emb_deployment'],
-            api_version=config[model_name]['api_version'],
-            dimensions=dim
-        )
-
-        vector_store_name = 'azure-ai-search'
-
-        vector_store = AzureSearch(
-            azure_search_endpoint = config[vector_store_name]['azure_endpoint'],
-            azure_search_key = config[vector_store_name]['api_key'],
-            index_name = config[vector_store_name]['index_name'],
-            embedding_function= embedding_model
-        )
+        print("尝试从st.secrets获取配置...")
+        if hasattr(st, 'secrets') and st.secrets:
+            print(f"st.secrets可用，包含以下键: {list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else 'No keys method'}")
+            if 'default_model' in st.secrets:
+                print(f"默认模型信息: {st.secrets['default_model']}")
+            if 'gpt-4.1-mini' in st.secrets:
+                print(f"模型配置包含键: {list(st.secrets['gpt-4.1-mini'].keys()) if hasattr(st.secrets['gpt-4.1-mini'], 'keys') else 'No keys method'}")
+            if 'azure-ai-search' in st.secrets:
+                print(f"向量存储配置包含键: {list(st.secrets['azure-ai-search'].keys()) if hasattr(st.secrets['azure-ai-search'], 'keys') else 'No keys method'}")
+        else:
+            print("st.secrets不可用")
         
-        return llm, embedding_model, vector_store
-    else:
-        print(f"Model {model_name} configuration not found")
-        return None, None
+        config = st.secrets
+        
+        # 如果streamlit secrets不可用，尝试从文件读取
+        if not config:
+            print("st.secrets为空，尝试从文件读取...")
+            # ✅ 优先从环境变量读取路径
+            config_path = os.environ.get("AZURE_CONFIG", os.path.join(DATA_DIR, 'keys', 'azure_config.json'))
+            print(f"尝试读取配置文件: {config_path}")
+            
+            if not os.path.exists(config_path):
+                print(f"API配置文件未找到: {config_path}")
+                print("请获取API密钥并按照README.md中的说明创建配置文件")
+                return None, None, None
+            
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            print(f"从文件加载配置成功，包含键: {list(config.keys())}")
+        
+        dim = 3072
+        # 如果使用streamlit secrets，需要适配其结构
+        if hasattr(config, 'get'):
+            # 从st.secrets中获取
+            model_name = config.get('default_model', {}).get('name', 'gpt-4.1-mini')
+            model_config = config.get(model_name, {})
+            vector_store_name = 'azure-ai-search'
+            vector_store_config = config.get(vector_store_name, {})
+        else:
+            # 从JSON配置中获取
+            model_name = 'gpt-4.1-mini'
+            model_config = config.get(model_name, {})
+            vector_store_name = 'azure-ai-search'
+            vector_store_config = config.get(vector_store_name, {})
+        
+        if model_config:
+            api_key = model_config.get('api_key')
+            api_base = model_config.get('api_base', '')
+            # 移除URL部分（如果存在）
+            base_endpoint = api_base.split('/openai')[0] if '/openai' in api_base else api_base
+            
+            llm = AzureChatOpenAI(
+                api_key=api_key,
+                azure_endpoint=base_endpoint,
+                azure_deployment=model_config.get('deployment'),
+                api_version=model_config.get('api_version'),
+                temperature=0
+            )
+            
+            embedding_model = AzureOpenAIEmbeddings(
+                api_key=api_key,
+                azure_endpoint=base_endpoint,
+                azure_deployment=model_config.get('emb_deployment'),
+                api_version=model_config.get('api_version'),
+                dimensions=dim
+            )
+            
+            if vector_store_config:
+                vector_store = AzureSearch(
+                    azure_search_endpoint = vector_store_config.get('azure_endpoint'),
+                    azure_search_key = vector_store_config.get('api_key'),
+                    index_name = vector_store_config.get('index_name'),
+                    embedding_function = embedding_model
+                )
+                
+                return llm, embedding_model, vector_store
+            else:
+                print(f"Vector store {vector_store_name} configuration not found")
+                return llm, embedding_model, None
+        else:
+            print(f"Model {model_name} configuration not found")
+            return None, None, None
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None
 
 
 def get_embedding(text: str, model) -> np.ndarray:
@@ -886,8 +935,8 @@ def resolve_innovation_duplicates(
     # Step 2: Construct a detailed textual context for each innovation
     # This includes: name, description, developers, and relationship-based context
     # Step 2: 为每个 Innovation 构建一个文本上下文（包含名称、描述、开发组织、其他关系说明）
-    global innovation_features
-    innovation_features.clear()
+    innovation_features = {}
+
 
     for _, row in tqdm(unique_innovations.iterrows(), total=len(unique_innovations), desc="Creating innovation features"):
         innovation_id = row["source_id"]
@@ -1053,24 +1102,54 @@ def resolve_innovation_duplicates(
     
     # Step 6: Upload canonical embeddings to Azure AI Search
     if vector_store is not None:
-        print("Uploading embeddings to Azure AI Search...")
 
-        text_embeddings = [(id, embeddings[id]) for id in clusters.keys() if id in embeddings]
+        uploaded_id_path = "./uploaded_ids.json"
+        if os.path.exists(uploaded_id_path):
+            with open(uploaded_id_path, "r") as f:
+                uploaded_ids = set(json.load(f))
+        else:
+            uploaded_ids = set()
+        
+        to_be_upload_ids = set()
+        new_uploaded_ids = set()
+
+        text_embeddings = []
+        contents = []
+        # print(clusters.values())
+
+        for id, emb in embeddings.items():
+            if id in innovation_features and id not in uploaded_ids \
+                    and id not in to_be_upload_ids:
+                text_embeddings.append((id, emb))
+                contents.append(innovation_features[id])
+                to_be_upload_ids.add(id)
+            else:
+                print(f"[警告] {id} 被跳过")
 
         # 1000 时有 error_map 的bug
         batch_size = 500
         total_batches = math.ceil(len(text_embeddings) / batch_size)
+        print(f"将上传 {len(text_embeddings)} 条嵌入向量，总共 {total_batches} 批")
 
+
+        # 将 id 对应的 description 装入 metadata，不需要再使用 global innovation_features
         for i in range(total_batches):
             start_index = i * batch_size
             end_index = start_index + batch_size
 
             batch_text_embeddings = text_embeddings[start_index:end_index]
+            batch_contents = contents[start_index:end_index]
+            metadatas = [{'source': content} for content in batch_contents]
 
             try:
                 vector_store.add_embeddings(
-                    text_embeddings=batch_text_embeddings
+                    text_embeddings=batch_text_embeddings,
+                    metadatas=metadatas
                 )
+
+                for id,_ in batch_text_embeddings:
+                    new_uploaded_ids.add(id)
+
                 print(f"Successfully uploaded batch {i + 1}/{total_batches}")
             # Batch 失败就一个一个试
             except Exception as e:
@@ -1078,10 +1157,18 @@ def resolve_innovation_duplicates(
                     print(f"Error batch")
                     for embd in batch_text_embeddings:
                         vector_store.add_embeddings(
-                            text_embeddings=[embd]
+                            text_embeddings=[embd],
+                            metadatas=[{'source':innovation_features[embd[0]]}]
                         )
+                        new_uploaded_ids.add(embd[0])
+
                 except Exception as e:
                     print(f"Error uploading embedding: {e}")
+
+        # 所有上传结束后，更新本地记录
+        uploaded_ids.update(new_uploaded_ids)
+        with open(uploaded_id_path, "w") as f:
+            json.dump(sorted(list(uploaded_ids)), f, indent=2)
 
         print("Uploaded embeddings to Azure AI Search...")
         
@@ -1353,16 +1440,15 @@ def export_results(analysis_results: Dict, consolidated_graph: Dict, canonical_m
 
 
 def chat_bot(query:str) -> str:
-    global innovation_features
 
-    llm, _ , vector_store = initialize_openai_client()
+    llm, embedding_model, vector_store = initialize_openai_client()
 
     
     if llm is None:
-        print("Warning: Language model not available. Some features may be limited.")
+        return "Error: Language model not available. Please check your configuration."
     
     if vector_store is None:
-        print("Warning: AI search unavailable.")
+        return "Error: AI search unavailable. Please check your configuration."
     
 
     # Set up Chatbot
@@ -1379,12 +1465,19 @@ def chat_bot(query:str) -> str:
 
     chatbot_llm = chatbot_prompt | llm
 
-    results = vector_store.vector_search(query, k=3)
+    try:
+        results = vector_store.vector_search(query, k=3)
+        context = "\n".join([res.metadata['source'] for res in results])
+    except Exception as e:
+        print(f"Error during vector search: {str(e)}")
+        context = "No relevant information found."
 
-    context = "\n".join([innovation_features[doc.page_content] for doc in results])
-
-    llm_result = chatbot_llm.invoke({"context":context, "question":query})
-    answer = llm_result.content
+    try:
+        llm_result = chatbot_llm.invoke({"context":context, "question":query})
+        answer = llm_result.content
+    except Exception as e:
+        print(f"Error generating answer: {str(e)}")
+        answer = f"Sorry, I couldn't process your question. Error: {str(e)}"
     
     return answer
 
@@ -1446,9 +1539,7 @@ def main():
         cache_config=cache_config
     )
 
-    # Test chat_bot.
-    answer = chat_bot("nuclear")
-    print(answer)
+
     
     # Step 3: Resolve innovation duplicates
     canonical_mapping = resolve_innovation_duplicates(
