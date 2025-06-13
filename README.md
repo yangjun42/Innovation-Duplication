@@ -2,11 +2,8 @@
 
 Youtube Link: https://www.youtube.com/watch?v=yKNr22bu9Yc
 
-![](https://www.youtube.com/watch?v=yKNr22bu9Yc) 
+Streamlit app link: https://test-vtt.streamlit.app
 
-<video width="320" height="240" controls>
-  <source src="https://www.youtube.com/watch?v=yKNr22bu9Yc" type="video/mp4">
-</video>
 This project addresses the challenge of identifying and consolidating innovation disclosures from VTT's collaboration partnerships.
 
 ## Challenge Description
@@ -70,7 +67,7 @@ Innovation-Duplication/
    ```
 
 
-### API Keys
+### Configuration file
 
 1. Obtain API keys for OpenAI models by asking at the VTT stand
 2. Place your API key configuration in `data/keys/azure_config.json` with the following structure:
@@ -174,13 +171,68 @@ python innovation_resolution.py --auto-label
 
 ## Solution Details
 
+# Azure Integration Details
+
+This section provides detailed instructions and configurations for integrating with Azure services.
+
+---
+
+## Azure Services Used
+
+### 1. Azure OpenAI
+
+Used for:
+
+* Embedding generation via `AzureOpenAIEmbeddings`
+* Language understanding and chat responses via `AzureChatOpenAI`
+
+#### Purpose of `AzureOpenAIEmbeddings`
+
+The `AzureOpenAIEmbeddings` component is responsible for converting innovation-related textual descriptions into high-dimensional vector representations (dimension = 3072). These embeddings capture semantic meaning and are used to measure similarity between different innovations. The resulting vectors are stored in Azure AI Search for later retrieval and clustering. This forms the core of the semantic deduplication and search pipeline.
+
+Deployment requirements:
+
+* `text-embedding-3-large`&#x20;
+
+#### Purpose of `AzureChatOpenAI`
+
+The `AzureChatOpenAI` model is designed to answer user questions about innovation relationships. It retrieves the most relevant context from the vectorized innovation database stored in Azure AI Search and generates an intelligent, context-aware response. It uses LangChain's prompt templating and pipeline to ensure answers are grounded in retrieved information.
+
+Deployment requirements:
+
+* ⚠️ Resource type should be `Azure OpenAI` instead of `Azure Foundry` , in this way you get full access to OpenAI model
+
+- `gpt-4.1-mini` or similar deployed under your Azure OpenAI resource. Change the name in **Configuration File** accordingly
+- The inference task of model is `ChatCompletion`
+
+### 2. Azure AI Search
+
+Used for:
+
+* Storing and querying innovation information embeddings
+* Supporting similarity search and  information retrieve
+
+Required setup:
+
+* Create a search service instance
+* Copy your API Key and Endpoint of Azure AI Search to **Configuration File**
+
+---
+
+## Coming Soon
+
+* Support for Azure CosmosDB (for graph persistence)
+* Automated Azure Search index provisioning
+* Azure Functions / Logic Apps integration
+
+
 ### Innovation Resolution
 
 The solution uses semantic similarity through embeddings to identify when different sources are discussing the same innovation:
 
 1. For each innovation, we create a feature representation combining:
    - Innovation name
-   - Innovation description
+   - Innovation descriptions
    - Organizations that developed it
 
 2. These features are converted to embeddings using OpenAI's embedding API or using TF-IDF as fallback
@@ -190,6 +242,38 @@ The solution uses semantic similarity through embeddings to identify when differ
 4. Innovations with similarity above a threshold (default: 0.85) are considered duplicates
 
 5. Duplicate innovations are mapped to a canonical innovation ID
+
+
+### Innovation Duplicate Detection & Knowledge Graph
+
+A lightweight pipeline to detect semantically duplicate innovations via embedding‐based clustering (HDBSCAN) and build a consolidated innovation–organization knowledge graph.
+
+1. **HDBSCAN Overview**
+HDBSCAN (Hierarchical Density‐Based Spatial Clustering of Applications with Noise)
+	-	No preset k: Automatically determines cluster count.
+	-	Variable‐density & arbitrary‐shape clusters: Handles small, unevenly sized duplicate groups.
+	-	Noise detection: Unique (non‐duplicate) innovations remain unclustered.
+	-	Membership probability: Each point obtains a “strength” score for belonging to its cluster.
+	-	Why HDBSCAN works here
+	-	Duplicate innovation records often form small, dense pockets in 1536-dimensional text‐embedding space.
+	-	HDBSCAN isolates outliers (non-duplicates) without forcing them into a cluster.
+	-	We normalize embeddings (cosine → Euclidean) and tune min_cluster_size=2 by default.
+
+2. **Experience result**
+  - Total nodes from all Grah: 4076
+  - Total edges: 9287
+  - Innovations: 1735(HDBSCAN) to 2000(setting needed for some clusters way)
+  - Organizations: 2490
+
+Baseline: Raw Threshold Clustering (Connected Components): Created knowledge graph with 1911 innovations, 2490 organizations, and 12502 relationships
+HDBSCAN (min_cluster_size=2, cosine metric): Created knowledge graph with 1735 innovations, 2490 organizations, and 12341 relationships
+K-Means (k = 1911): Created knowledge graph with 1911 innovations, 2490 organizations, and 12544 relationships
+Agglomerative Hierarchical Clustering (n_clusters = 1911): Created knowledge graph with 1911 innovations, 2490 organizations, and 12544 relationships
+Spectral Clustering (n_clusters = 1911, n_neighbors = 15): Created knowledge graph with 1911 innovations, 2490 organizations, and 12612 relationships
+
+3. **API utils**
+ALL the cluster we try have been packaged into API form, which includes HDBSCAN, K-Means, Agglomerative Hierarchical Clustering, Spectral Clustering, Faiss‐Based Nearest Neighbors + Graph Clustering and Pure Graph Clustering (Threshold + Connected Components / k-Core). Using Pure Graph Clustering to get the initial cluster numbers for all the cluster methods that needed to be preinputed first.
+ 
 
 ### Caching System
 
