@@ -2,7 +2,7 @@
 
 Youtube Link: https://www.youtube.com/watch?v=yKNr22bu9Yc
 
-Streamlit app link: https://test-vtt.streamlit.app
+Streamlit app link: https://innovation-duplication.streamlit.app
 
 This project addresses the challenge of identifying and consolidating innovation disclosures from VTT's collaboration partnerships.
 
